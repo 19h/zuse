@@ -1,0 +1,41 @@
+[package]
+name = "zuse"
+version = "0.1.1"
+authors = ["Kenan Sulayman <kenan@sig.dev>"]
+license = "MIT"
+repository = "https://github.com/19h/zuse"
+description = "The flexible uptime bot, a descendant of the Rust async masterrace."
+readme = "readme.md"
+edition = "2018"
+
+[[bin]]
+bench = false
+path = "src/main.rs"
+name = "zuse"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+daemonize = "0.4.1"
+anyhow = "1.0.28"
+serde = "1.0.106"
+serde_yaml = "0.8.11"
+serde_derive = "1.0.106"
+clap = "2.33.0"
+futures = "0.3.4"
+telegram-bot = "0.7.0"
+tokio = { version = "0.2.16", features = ["rt-core", "macros", "time", "fs", "sync"] }
+mpmc = "0.1.5"
+reqwest = "0.10.4"
+hyper = "0.13.3"
+
+[profile]
+
+[profile.release]
+codegen-units = 1
+debug = false
+debug-assertions = false
+lto = true
+opt-level = 3
+panic = "abort"
+rpath = false

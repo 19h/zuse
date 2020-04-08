@@ -1,0 +1,16 @@
+notifiers:
+  - type: telegram
+    token: xxxx
+    channels:
+      - name: tg_chan
+        id: -1000000000000
+
+tests:
+  - type: alive
+    name: site-com-alive-cdn
+    retries: 3
+    recovery: 3
+    interval: 1
+    url: https://site.com/endpoint
+    notify:
+      - tg_infraeop
