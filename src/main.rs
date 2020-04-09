@@ -1,51 +1,40 @@
 #![feature(async_closure)]
 
 use anyhow::{Result, Context};
-use clap::{Arg, App, ArgMatches};
-use daemonize::{Daemonize, DaemonizeError};
-use futures::{StreamExt, Stream, Sink, SinkExt};
-use futures::executor::{block_on, block_on_stream};
-use futures::future::{FutureExt, poll_fn, Future};
-use futures::task::Poll;
-use reqwest::StatusCode;
+use clap::{Arg, App};
+use daemonize::Daemonize;
+use futures::{StreamExt, SinkExt};
 use serde_derive::{Deserialize, Serialize};
 use std::fs::File;
 use std::collections::HashMap;
-use std::thread;
 use std::process::exit;
-use std::borrow::BorrowMut;
 use std::time::Duration;
-use telegram_bot as tg;
 use telegram_bot::prelude::*;
-use tokio;
-use tokio::sync::mpsc;
-use tokio::runtime::Runtime;
-use tokio::sync;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct Prof1tConfigNotifierChannel {
+struct ZuseConfigNotifierChannel {
     name: String,
     id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct Prof1tConfigNotifier {
+struct ZuseConfigNotifier {
     #[serde(rename = "type")]
     notifier_type: String,
     token: String,
-    channels: Vec<Prof1tConfigNotifierChannel>,
+    channels: Vec<ZuseConfigNotifierChannel>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-enum Prof1tConfigTestType {
+enum ZuseConfigTestType {
     #[serde(rename = "alive")]
     Alive
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct Prof1tConfigTest {
+struct ZuseConfigTest {
     #[serde(rename = "type")]
-    test_type: Prof1tConfigTestType,
+    test_type: ZuseConfigTestType,
     name: String,
     retries: u64,
     recovery: u64,
@@ -55,18 +44,38 @@ struct Prof1tConfigTest {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct Prof1tConfig {
-    notifiers: Vec<Prof1tConfigNotifier>,
-    tests: Vec<Prof1tConfigTest>,
+struct ZuseConfigInternal {
+    dump_prefix_url: Option<String>,
 }
 
-enum Prof1tNotifyType {
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct ZuseConfig {
+    notifiers: Vec<ZuseConfigNotifier>,
+    config: Option<ZuseConfigInternal>,
+    tests: Vec<ZuseConfigTest>,
+}
+
+#[derive(Clone)]
+struct ZuseArgs {
+    verbosity: u8,
+    config: ZuseConfig,
+}
+
+impl ZuseArgs {
+    #[inline(always)]
+    fn debug(&self) -> bool { self.verbosity > 1 }
+
+    #[inline(always)]
+    fn verbose(&self) -> bool { self.verbosity > 0 }
+}
+
+enum ZuseNotifyType {
     Telegram(telegram_bot::Api),
 }
 
-type Prof1tChannel = (usize, String);
-type Prof1tChannelMap = HashMap<String, Prof1tChannel>;
-type Prof1tJobMessage = (usize, String);
+type ZuseChannel = (usize, String);
+type ZuseChannelMap = HashMap<String, ZuseChannel>;
+type ZuseJobMessage = (usize, String);
 
 #[derive(Debug, Clone, PartialEq)]
 enum JobSMStates {
@@ -150,6 +159,7 @@ impl JobStateMachine {
     fn win(&mut self) {
         match self.state {
             JobSMStates::Normative => {
+                self.n_failures = 0;
                 self.last_state = JobSMStates::Normative;
             }
             JobSMStates::Failure => {
@@ -179,27 +189,25 @@ impl JobStateMachine {
     }
 }
 
-struct Prof1t {
-    config: Prof1tConfig,
-    verbose: bool,
+struct Zuse {
+    args: ZuseArgs,
 
-    notifiers: Vec<Prof1tNotifyType>,
-    channels: Prof1tChannelMap,
+    notifiers: Vec<ZuseNotifyType>,
+    channels: ZuseChannelMap,
 }
 
-impl Prof1t {
+impl Zuse {
     fn new(
-        mut config: Prof1tConfig,
-        verbose: bool,
-    ) -> Result<Prof1t> {
+        mut args: ZuseArgs,
+    ) -> Result<Zuse> {
         let mut notifiers = Vec::new();
 
-        let mut channels: Prof1tChannelMap = HashMap::new();
+        let mut channels: ZuseChannelMap = HashMap::new();
 
-        for notifier in config.notifiers.iter() {
+        for notifier in args.config.notifiers.iter() {
             match &*notifier.notifier_type {
                 "telegram" => {
-                    if notifier.channels.len() == 0 {
+                    if notifier.channels.is_empty() {
                         // there's no point to setup this listener
                         // if there's no channel associated with it
                         continue;
@@ -208,14 +216,14 @@ impl Prof1t {
                     let notifier_id = notifiers.len();
 
                     notifiers.push(
-                        Prof1tNotifyType::Telegram(
+                        ZuseNotifyType::Telegram(
                             telegram_bot::Api::new(
                                 notifier.token.clone(),
                             ),
                         ),
                     );
 
-                    if verbose {
+                    if args.verbose() {
                         println!(
                             "Configured client (type: {}, token: {}, iid: {})..",
                             "telegram",
@@ -240,7 +248,7 @@ impl Prof1t {
                             (notifier_id, channel.id.clone()),
                         );
 
-                        if verbose {
+                        if args.verbose() {
                             println!(
                                 "Registered channel (iid: {}, name: {}, id: {})..",
                                 notifier_id,
@@ -258,7 +266,7 @@ impl Prof1t {
             }
         }
 
-        for test in config.tests.iter() {
+        for test in args.config.tests.iter() {
             for test_notify in test.notify.iter() {
                 if !channels.contains_key(test_notify) {
                     println!(
@@ -274,19 +282,18 @@ impl Prof1t {
         }
 
         Ok(
-            Prof1t {
-                config,
+            Zuse {
+                args,
+
                 notifiers,
                 channels,
-
-                verbose,
             },
         )
     }
 
     async fn try_send(
         &self,
-        channel: &Prof1tChannel,
+        channel: &ZuseChannel,
         msg: &str,
     ) -> Result<()> {
         let notifier =
@@ -295,7 +302,7 @@ impl Prof1t {
                 .unwrap();
 
         match notifier {
-            Prof1tNotifyType::Telegram(api) => {
+            ZuseNotifyType::Telegram(api) => {
                 let mut msg =
                     telegram_bot::ChannelId::new(
                         channel.1.clone().parse::<i64>().unwrap()
@@ -316,13 +323,23 @@ impl Prof1t {
     }
 
     async fn test_runner_alive(
-        (test_id, test): (usize, Prof1tConfigTest),
-        mut tx: tokio::sync::mpsc::Sender<Prof1tJobMessage>,
+        args: &ZuseArgs,
+        (test_id, test): (usize, ZuseConfigTest),
+        mut tx: tokio::sync::mpsc::Sender<ZuseJobMessage>,
     ) -> Result<()> {
         let mut jsm = JobStateMachine::new(
             test.retries,
             test.recovery,
         );
+
+        let dump_req = {
+            if args.config.config.is_some()
+                && args.config.config.as_ref().unwrap().dump_prefix_url.is_some() {
+                (true, &args.config.config.as_ref().unwrap().dump_prefix_url)
+            } else {
+                (false, &None)
+            }
+        };
 
         loop {
             let req =
@@ -330,9 +347,17 @@ impl Prof1t {
                 ::get(&test.url.clone())
                     .await;
 
+            let serialized_req =
+                if dump_req.0 {
+                    format!("{:#?}", req)
+                } else {
+                    "".to_string()
+                };
+
             let assume_alive = match req {
-                Ok(res) =>
-                    res.status().is_success(),
+                Ok(res) => {
+                    res.status().is_success()
+                }
                 Err(_) => false,
             };
 
@@ -342,22 +367,35 @@ impl Prof1t {
                 jsm.loss();
             }
 
-            //println!(
-            //    "{} {:?} {:?} {}",
-            //    jsm.state_changed(),
-            //    jsm.state,
-            //    jsm.last_state,
-            //    jsm.last_state_lasted,
-            //);
+            if args.debug() {
+                println!(
+                    "alive: {} changed: {} now: {:?} was: {:?} lasted: {}",
+                    assume_alive,
+                    jsm.state_changed(),
+                    jsm.state,
+                    jsm.last_state,
+                    jsm.last_state_lasted,
+                );
+            }
 
             if jsm.state_changed() {
                 if jsm.state == JobSMStates::Failure {
                     tx.send((
                         test_id,
                         format!(
-                            "<b>ALRT</b> Uptime checks failed on '{}'. (duration={}s, url: {})",
+                            "<b>ALRT</b> Uptime checks failed on '{}'. ({}url: {})",
                             test.name,
-                            jsm.last_state_lasted,
+                            {
+                                if dump_req.0 {
+                                    format!(
+                                        "<a href='{}#{}'>view dump</a>, ",
+                                        &dump_req.1.as_ref().unwrap(),
+                                        base64::encode(&serialized_req),
+                                    )
+                                } else {
+                                    "".to_string()
+                                }
+                            },
                             test.url,
                         )
                     )).await;
@@ -367,8 +405,12 @@ impl Prof1t {
                     tx.send((
                         test_id,
                         format!(
-                            "<b>RSLV</b> Uptime checks recovered on '{}'. (duration={}s, url: {})",
+                            "<b>RSLV</b> Uptime checks recovered on '{}'. (<a href='{}'>view dump</a>, duration={}s, url: {})",
                             test.name,
+                            format!(
+                                "https://r2.darknet.dev/b64d.html#{}",
+                                base64::encode(&serialized_req),
+                            ),
                             jsm.last_state_lasted,
                             test.url,
                         )
@@ -389,12 +431,14 @@ impl Prof1t {
     }
 
     async fn test_runner(
-        (test_id, test): (usize, Prof1tConfigTest),
-        mut tx: tokio::sync::mpsc::Sender<Prof1tJobMessage>,
+        args: ZuseArgs,
+        (test_id, test): (usize, ZuseConfigTest),
+        mut tx: tokio::sync::mpsc::Sender<ZuseJobMessage>,
     ) -> Result<()> {
         match test.test_type {
-            Prof1tConfigTestType::Alive =>
-                Prof1t::test_runner_alive(
+            ZuseConfigTestType::Alive =>
+                Zuse::test_runner_alive(
+                    &args,
                     (test_id, test),
                     tx,
                 ),
@@ -405,10 +449,11 @@ impl Prof1t {
 
     async fn handle_msg(
         &self,
-        msg: Prof1tJobMessage,
+        msg: ZuseJobMessage,
     ) -> Result<()> {
         let testcase =
-            self.config
+            self.args
+                .config
                 .tests
                 .get(msg.0)
                 .unwrap();
@@ -420,6 +465,14 @@ impl Prof1t {
                     &channel,
                     &msg.1,
                 ).await;
+
+                if self.args.debug() {
+                    println!(
+                        "notify dispatch. chan: {} msg: {}",
+                        &channel.1,
+                        &msg.1,
+                    );
+                }
 
                 send_op
                     .map_err(|err|
@@ -437,16 +490,19 @@ impl Prof1t {
 
     async fn run(self) -> Result<()> {
         let (sender, mut receiver) =
-            tokio::sync::mpsc::channel::<Prof1tJobMessage>(
-                self.config.tests.len(),
+            tokio::sync::mpsc::channel::<ZuseJobMessage>(
+                self.args.config.tests.len(),
             );
 
-        for test in self.config.tests.iter().cloned().enumerate() {
+        for test in self.args.config.tests.iter().cloned().enumerate() {
             let mut test_tx = sender.clone();
             let (test_id, test) = test;
 
+            let args = self.args.clone();
+
             tokio::spawn(async move {
-                Prof1t::test_runner(
+                Zuse::test_runner(
+                    args,
                     (test_id, test),
                     test_tx,
                 ).await;
@@ -479,9 +535,9 @@ fn try_daemonize() -> Result<()> {
     Ok(())
 }
 
-fn read_config(config_path: &str) -> Result<Prof1tConfig> {
+fn read_config(config_path: &str) -> Result<ZuseConfig> {
     Ok(
-        serde_yaml::from_str::<Prof1tConfig>(
+        serde_yaml::from_str::<ZuseConfig>(
             &String::from_utf8_lossy(
                 &std::fs::read(&config_path)?,
             ),
@@ -505,10 +561,15 @@ async fn main() -> Result<()> {
                 .default_value("tests.yml"))
             .arg(Arg::with_name("daemon")
                 .short("d")
+                .long("daemon")
                 .help("Daemonize prof1t"))
             .arg(Arg::with_name("verbose")
                 .short("v")
+                .long("verbose")
                 .help("Print verbose logs"))
+            .arg(Arg::with_name("debug")
+                .long("debug")
+                .help("Print debug logs (implies verbose)"))
             .get_matches()
             .clone()
     };
@@ -518,11 +579,25 @@ async fn main() -> Result<()> {
             .context("Failed to daemonize process.")?;
     }
 
-    let prof1t = Prof1t::new(
-        read_config(
-            matches.value_of("config").unwrap(),
-        ).context("Failed to read config.")?,
-        matches.is_present("verbose"),
+    let config = read_config(
+        matches.value_of("config").unwrap(),
+    ).context("Failed to read config.")?;
+
+    let args = ZuseArgs {
+        verbosity: {
+            if matches.is_present("debug") {
+                2
+            } else if matches.is_present("verbose") {
+                1
+            } else {
+                0
+            }
+        },
+        config,
+    };
+
+    let prof1t = Zuse::new(
+        args,
     )?;
 
     prof1t.run().await?;

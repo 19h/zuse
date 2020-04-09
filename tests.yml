@@ -13,4 +13,4 @@ tests:
     interval: 1
     url: https://site.com/endpoint
     notify:
-      - tg_infraeop
+      - tg_chan
