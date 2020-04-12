@@ -14,14 +14,35 @@ use telegram_bot::prelude::*;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct ZuseConfigNotifierChannel {
     name: String,
-    id: String,
+
+    // Telegram
+
+    id: Option<String>,
+
+    // AwsSns
+
+    phone: Option<String>,
+    target_arn: Option<String>,
+    topic_arn: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct ZuseConfigNotifierAuth {
+    // Telegram
+
+    token: Option<String>,
+
+    // AwsSns
+
+    key: Option<String>,
+    secret: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct ZuseConfigNotifier {
     #[serde(rename = "type")]
     notifier_type: String,
-    token: String,
+    auth: ZuseConfigNotifierAuth,
     channels: Vec<ZuseConfigNotifierChannel>,
 }
 
@@ -215,10 +236,22 @@ impl Zuse {
 
                     let notifier_id = notifiers.len();
 
+                    let token = {
+                        if notifier.auth.token.is_none() {
+                            println!(
+                                "Error: notifier {:?} ({}) must specify an id.",
+                                &notifier_id,
+                                &notifier.notifier_type,
+                            );
+                        }
+
+                        notifier.auth.token.as_ref().unwrap().clone()
+                    };
+
                     notifiers.push(
                         ZuseNotifyType::Telegram(
                             telegram_bot::Api::new(
-                                notifier.token.clone(),
+                                token.clone(),
                             ),
                         ),
                     );
@@ -227,17 +260,31 @@ impl Zuse {
                         println!(
                             "Configured client (type: {}, token: {}, iid: {})..",
                             "telegram",
-                            &notifier.token,
+                            &token,
                             notifier_id,
                         );
                     }
 
                     for channel in notifier.channels.iter() {
-                        if channel.id.clone().parse::<i64>().is_err() {
+                        let chan_id = {
+                            match channel.id.as_ref() {
+                                Some(id) => id,
+                                None => {
+                                    println!(
+                                        "Error: channel {:?} must specify an id.",
+                                        &channel.name,
+                                    );
+
+                                    exit(1);
+                                }
+                            }
+                        };
+
+                        if chan_id.parse::<i64>().is_err() {
                             println!(
                                 "Error: channel {:?} must have valid i64 id. (cid: {})",
-                                channel.name.clone(),
-                                channel.id.clone(),
+                                &channel.name,
+                                chan_id,
                             );
 
                             exit(1);
@@ -245,7 +292,7 @@ impl Zuse {
 
                         channels.insert(
                             channel.name.clone(),
-                            (notifier_id, channel.id.clone()),
+                            (notifier_id, chan_id.clone()),
                         );
 
                         if args.verbose() {
@@ -253,7 +300,7 @@ impl Zuse {
                                 "Registered channel (iid: {}, name: {}, id: {})..",
                                 notifier_id,
                                 channel.name.clone(),
-                                channel.id.clone(),
+                                chan_id.clone(),
                             );
                         }
                     }

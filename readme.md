@@ -24,10 +24,24 @@ $ zuse -c tests.yml
 ```yaml
 notifiers:
   - type: telegram
-    token: xxxx
+    auth:
+      token: xxxx
     channels:
       - name: tg_chan
+        # channel or group or user who
+        # previous messaged the bot
         id: -1000000000000
+  - type: aws_sns
+    auth:
+      key: AKIXXXXXXXXXXXXXXXXX
+      secret: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+    channels:
+      - name: sns_tgt1
+        phone: +491701234567
+        # or
+        target_arn: arn:aws:sns:us-east-1:XXXXXXXXXXXX:XXXXXXXX
+        # or
+        topic_arn: arn:aws:sns:us-east-1:XXXXXXXXXXXX:XXXXXXXX
 
 tests:
   - type: alive
