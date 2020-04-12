@@ -1,6 +1,7 @@
 notifiers:
   - type: telegram
-    token: xxxx
+    auth:
+      token: xxxx
     channels:
       - name: tg_chan
         id: -1000000000000

@@ -92,6 +92,7 @@ impl ZuseArgs {
 
 enum ZuseNotifyType {
     Telegram(telegram_bot::Api),
+    Sns(rusoto_sns::SnsClient),
 }
 
 type ZuseChannel = (usize, String);
@@ -226,27 +227,31 @@ impl Zuse {
         let mut channels: ZuseChannelMap = HashMap::new();
 
         for notifier in args.config.notifiers.iter() {
+            if notifier.channels.is_empty() {
+                // there's no point to setup this listener
+                // if there's no channel associated with it
+                continue;
+            }
+
+            let notifier_id = notifiers.len();
+
             match &*notifier.notifier_type {
                 "telegram" => {
-                    if notifier.channels.is_empty() {
-                        // there's no point to setup this listener
-                        // if there's no channel associated with it
-                        continue;
-                    }
-
-                    let notifier_id = notifiers.len();
-
-                    let token = {
-                        if notifier.auth.token.is_none() {
-                            println!(
+                    notifier.auth.token
+                        .as_ref()
+                        .expect(
+                            &format!(
                                 "Error: notifier {:?} ({}) must specify an id.",
                                 &notifier_id,
                                 &notifier.notifier_type,
-                            );
-                        }
+                            ),
+                        );
 
-                        notifier.auth.token.as_ref().unwrap().clone()
-                    };
+                    let token =
+                        notifier.auth.token
+                            .as_ref()
+                            .unwrap()
+                            .clone();
 
                     notifiers.push(
                         ZuseNotifyType::Telegram(
@@ -266,29 +271,24 @@ impl Zuse {
                     }
 
                     for channel in notifier.channels.iter() {
-                        let chan_id = {
-                            match channel.id.as_ref() {
-                                Some(id) => id,
-                                None => {
-                                    println!(
+                        let chan_id =
+                            channel.id
+                                .as_ref()
+                                .expect(
+                                    &format!(
                                         "Error: channel {:?} must specify an id.",
                                         &channel.name,
-                                    );
+                                    ),
+                                );
 
-                                    exit(1);
-                                }
-                            }
-                        };
-
-                        if chan_id.parse::<i64>().is_err() {
-                            println!(
-                                "Error: channel {:?} must have valid i64 id. (cid: {})",
-                                &channel.name,
-                                chan_id,
+                        chan_id.parse::<i64>()
+                            .expect(
+                                &format!(
+                                    "Error: channel {:?} must have valid i64 id. (cid: {})",
+                                    &channel.name,
+                                    chan_id,
+                                ),
                             );
-
-                            exit(1);
-                        }
 
                         channels.insert(
                             channel.name.clone(),
@@ -305,6 +305,9 @@ impl Zuse {
                         }
                     }
                 }
+                "sns" => {
+
+                },
                 unknown_type => {
                     println!("Error: type {:?} is unknown.", unknown_type);
 
@@ -363,6 +366,9 @@ impl Zuse {
                 api.send(
                     msg,
                 ).await?;
+            },
+            ZuseNotifyType::Sns(client) => {
+                unimplemented!();
             }
         }
 
