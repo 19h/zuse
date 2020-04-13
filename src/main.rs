@@ -44,10 +44,27 @@ struct ZuseConfigNotifierAuth {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct ZuseConfigNotifierTemplates {
+    alive_alert_plain: Option<String>,
+    alive_alert_html: Option<String>,
+    alive_resolve_plain: Option<String>,
+    alive_resolve_html: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+enum ZuseConfigNotifierType {
+    #[serde(rename = "telegram")]
+    Telegram,
+    #[serde(rename = "sns")]
+    Sns,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct ZuseConfigNotifier {
     #[serde(rename = "type")]
-    notifier_type: String,
+    notifier_type: ZuseConfigNotifierType,
     auth: ZuseConfigNotifierAuth,
+    templates: Option<ZuseConfigNotifierTemplates>,
     channels: Vec<ZuseConfigNotifierChannel>,
 }
 
@@ -109,16 +126,107 @@ enum ZuseChannelType {
 
 type ZuseChannel = (usize, ZuseChannelType);
 type ZuseChannelMap = HashMap<String, ZuseChannel>;
-type ZuseJobMessage = (usize, String);
 
-//struct ZuseJobMessage {
-//    test_id: usize,
-//    subject: String,
-//    msg_plain: String,
-//    msg_html: String,
-//}
+#[derive(Debug, Clone, Serialize)]
+struct ZuseJobMessage {
+    test_id: usize,
+    test_name: String,
+    test_url: String,
+    dump_html: String,
+    dump_url: String,
+    dump_used: bool,
+    time_state_lasted: u64,
+    state: JobSMStates,
+}
 
-#[derive(Debug, Clone, PartialEq)]
+impl ZuseJobMessage {
+    fn with_state(
+        self,
+        state: JobSMStates,
+    ) -> Self {
+        Self {
+            state,
+            ..self
+        }
+    }
+
+    fn resolve_custom_templates(
+        &self,
+        notifier: &ZuseConfigNotifier,
+    ) -> (String, String) {
+        let tmpl_cstm =
+            notifier
+                .templates
+                .as_ref()
+                .map_or(
+                    (None, None, None, None),
+                    |t|
+                        (
+                            t.alive_alert_html.clone(),
+                            t.alive_alert_plain.clone(),
+                            t.alive_resolve_html.clone(),
+                            t.alive_resolve_plain.clone(),
+                        )
+                );
+
+        match &self.state {
+            JobSMStates::Failure => {
+                (
+                    tmpl_cstm.0.unwrap_or(DEFAULT_MSG_TMPL_ALIVE_ALRT_HTML.to_string()),
+                    tmpl_cstm.1.unwrap_or(DEFAULT_MSG_TMPL_ALIVE_ALRT_PLAIN.to_string())
+                )
+            },
+            JobSMStates::Recovery => {
+                (
+                    tmpl_cstm.2.unwrap_or(DEFAULT_MSG_TMPL_ALIVE_RSLV_HTML.to_string()),
+                    tmpl_cstm.3.unwrap_or(DEFAULT_MSG_TMPL_ALIVE_RSLV_PLAIN.to_string())
+                )
+            },
+            JobSMStates::Normative => unreachable!(),
+        }
+    }
+
+    fn build(
+        &self,
+        args: &ZuseArgs,
+        notifier_id: &usize,
+    ) -> String {
+        let notifier =
+            args
+                .config
+                .notifiers
+                .get(*notifier_id)
+                .unwrap();
+
+        let (tmpl_html, tmpl_plain) =
+            self.resolve_custom_templates(
+                &notifier,
+            );
+
+        // TODO: if user wants to selectively make
+        // a platform plain or html, impl it here
+        match notifier.notifier_type {
+            ZuseConfigNotifierType::Telegram => {
+                handlebars::Handlebars::new()
+                    .render(
+                        &*tmpl_html,
+                        &self,
+                    )
+                    .unwrap()
+            },
+            ZuseConfigNotifierType::Sns => {
+                handlebars::Handlebars::new()
+                    .render(
+                        &*tmpl_plain,
+                        &self,
+                    )
+                    .unwrap()
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 enum JobSMStates {
     Normative,
     Failure,
@@ -230,6 +338,12 @@ impl JobStateMachine {
     }
 }
 
+const DEFAULT_MSG_TMPL_ALIVE_ALRT_PLAIN: &'static str = "ALRT Uptime checks failed on '{{test_name}}'. (url: {{test_url}})";
+const DEFAULT_MSG_TMPL_ALIVE_ALRT_HTML: &'static str = "<b>ALRT</b> Uptime checks failed on '{{test_name}}'. (url: {{test_url}})";
+
+const DEFAULT_MSG_TMPL_ALIVE_RSLV_PLAIN: &'static str = "ALRT Uptime checks failed on '{{test_name}}'. (url: {{test_url}})";
+const DEFAULT_MSG_TMPL_ALIVE_RSLV_HTML: &'static str = "<b>RSLV</b> Uptime checks recovered on '{{test_name}}'. (duration={{time_state_lasted}}s, url: {{test_url}})";
+
 struct Zuse {
     args: ZuseArgs,
 
@@ -252,11 +366,11 @@ impl Zuse {
                 continue;
             }
 
-            match &*notifier.notifier_type {
-                "telegram" => {
+            match notifier.notifier_type {
+                ZuseConfigNotifierType::Telegram => {
                     if let None = notifier.auth.token.as_ref() {
                         println!(
-                            "Error: notifier {:?} ({}) must specify a token.",
+                            "Error: notifier {:?} ({:?}) must specify a token.",
                             &notifier_id,
                             &notifier.notifier_type,
                         );
@@ -276,10 +390,10 @@ impl Zuse {
 
                     if args.verbose() {
                         println!(
-                            "Configured notifier (type: {}, token: {}, iid: {})..",
-                            "telegram",
-                            &token,
+                            "Configured notifier {} (type: {:?}, token: {})..",
                             notifier_id,
+                            &notifier.notifier_type,
+                            &token,
                         );
                     }
 
@@ -287,8 +401,9 @@ impl Zuse {
                         telegram_bot::GetMe,
                     ).await.is_err() {
                         println!(
-                            "Error: notifier {} has invalid telegram token. (token: {})",
+                            "Error: notifier {} ({:?}) has invalid telegram token. (token: {})",
                             notifier_id,
+                            &notifier.notifier_type,
                             &token,
                         );
 
@@ -359,14 +474,14 @@ impl Zuse {
                         ),
                     );
                 }
-                "sns" => {
+                ZuseConfigNotifierType::Sns => {
                     let has_key_and_secret =
                         notifier.auth.key.is_some()
-                        && notifier.auth.secret.is_some();
+                            && notifier.auth.secret.is_some();
 
                     if let None = notifier.auth.region {
                         println!(
-                            "Error: notifier {:?} ({}) must specify region.",
+                            "Error: notifier {:?} ({:?}) must specify region.",
                             &notifier_id,
                             &notifier.notifier_type,
                         );
@@ -409,17 +524,17 @@ impl Zuse {
 
                             let has_correct_env_creds =
                                 env_vars.contains("AWS_ACCESS_KEY_ID")
-                            &&  env_vars.contains("AWS_SECRET_ACCESS_KEY");
+                                    && env_vars.contains("AWS_SECRET_ACCESS_KEY");
 
                             if !has_correct_env_creds {
                                 println!(
-                                    "Error: notifier {:?} ({}) has no key and secret set, defaulting to env creds.",
+                                    "Error: notifier {:?} ({:?}) has no key and secret set, defaulting to env creds.",
                                     &notifier_id,
                                     &notifier.notifier_type,
                                 );
 
                                 println!(
-                                    "Error: notifier {:?} ({}) requires env (AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY) to be set.",
+                                    "Error: notifier {:?} ({:?}) requires env (AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY) to be set.",
                                     &notifier_id,
                                     &notifier.notifier_type,
                                 );
@@ -448,10 +563,10 @@ impl Zuse {
                     match sts_client.get_caller_identity(GetCallerIdentityRequest {})
                         .await {
                         Ok(GetCallerIdentityResponse {
-                            account,
-                            arn,
-                            user_id,
-                        }) => {
+                               account,
+                               arn,
+                               user_id,
+                           }) => {
                             if args.verbose() {
                                 println!(
                                     "Configured notifier (type: {}, key: {}, iid: {})..",
@@ -467,10 +582,10 @@ impl Zuse {
                                     user_id.unwrap_or("".to_string()),
                                 );
                             }
-                        },
+                        }
                         Err(err) => {
                             println!(
-                                "Error: notifier {:?} ({}) could not validate AWS credentials.",
+                                "Error: notifier {:?} ({:?}) could not validate AWS credentials.",
                                 &notifier_id,
                                 &notifier.notifier_type,
                             );
@@ -501,7 +616,7 @@ impl Zuse {
                             if opt_out_check.is_opted_out.is_some()
                                 && opt_out_check.is_opted_out.unwrap() == true {
                                 println!(
-                                    "Error: notifier {} ({}) channel {:?}: {:?} has explicitly opted out from receing SMS via SNS.",
+                                    "Error: notifier {} ({:?}) channel {:?}: {:?} has explicitly opted out from receing SMS via SNS.",
                                     &notifier_id,
                                     &notifier.notifier_type,
                                     &channel.name,
@@ -514,7 +629,7 @@ impl Zuse {
 
                         if (has_phone as i8 + has_target as i8 + has_topic as i8) > 1 {
                             println!(
-                                "Error: notifier {} ({}) channel {:?} must specify at most one of phone, target_arn or topic_arn.",
+                                "Error: notifier {} ({:?}) channel {:?} must specify at most one of phone, target_arn or topic_arn.",
                                 &notifier_id,
                                 &notifier.notifier_type,
                                 &channel.name,
@@ -540,11 +655,6 @@ impl Zuse {
                         ),
                     );
                 },
-                unknown_type => {
-                    println!("Error: type {:?} is unknown.", unknown_type);
-
-                    exit(1);
-                }
             }
         }
 
@@ -576,43 +686,51 @@ impl Zuse {
     async fn try_send(
         &self,
         channel: &ZuseChannel,
-        msg: &str,
+        msg: ZuseJobMessage,
     ) -> Result<()> {
         let notifier =
             self.notifiers
                 .get(channel.0)
                 .unwrap();
 
-        let notifier = &channel.1;
-
         match notifier {
             ZuseNotifyType::Telegram(api) => {
-                let mut msg = {
+                let mut tg_msg = {
                     let chat_id = match &channel.1 {
                         ZuseChannelType::Telegram(chat_id)
-                            => &*chat_id,
+                        => &*chat_id,
                         _ => "",
                     };
 
                     telegram_bot::ChannelId::new(
                         chat_id.clone().parse::<i64>().unwrap()
                     )
-                        .text(msg)
+                        .text(
+                            msg.build(
+                                &self.args,
+                                &channel.0,
+                            ),
+                        )
                 };
 
-                msg
+                tg_msg
                     .parse_mode(telegram_bot::types::ParseMode::Html)
                     .disable_preview();
 
                 api.send(
-                    msg,
+                    tg_msg,
                 ).await?;
-            },
+            }
             ZuseNotifyType::Sns(client) => {
                 match &channel.1 {
                     ZuseChannelType::Sns(phone, target, topic) => {
+                        let msg_str = msg.build(
+                            &self.args,
+                            &channel.0,
+                        );
+
                         let publish_input = rusoto_sns::PublishInput {
-                            message: msg.to_string(),
+                            message: msg_str,
                             message_attributes: None,
                             message_structure: None,
                             phone_number: phone.clone(),
@@ -624,8 +742,8 @@ impl Zuse {
                         client.publish(
                             publish_input,
                         ).await?;
-                    },
-                    _ => {},
+                    }
+                    _ => {}
                 }
             }
         }
@@ -701,45 +819,57 @@ impl Zuse {
                 );
             }
 
+            let dump_used = if dump_req.0 { true } else { false };
+
+            let dump_url = if dump_req.0 {
+                format!(
+                    "{}#{}",
+                    &dump_req.1.as_ref().unwrap(),
+                    base64::encode(&serialized_req),
+                )
+            } else {
+                "".to_string()
+            };
+
+            let dump_html = if dump_req.0 {
+                format!(
+                    "<a href='{}'>view dump</a>, ",
+                    &dump_url,
+                )
+            } else {
+                "".to_string()
+            };
+
+            let msg = ZuseJobMessage {
+                test_id: test_id.clone(),
+                test_name: test.name.clone(),
+                test_url: test.url.clone(),
+                dump_html,
+                dump_url,
+                dump_used,
+                time_state_lasted: jsm.last_state_lasted,
+                state: JobSMStates::Normative,
+            };
+
             if jsm.state_changed() {
-                if jsm.state == JobSMStates::Failure {
-                    tx.send((
-                        test_id,
-                        format!(
-                            "<b>ALRT</b> Uptime checks failed on '{}'. ({}url: {})",
-                            test.name,
-                            {
-                                if dump_req.0 {
-                                    format!(
-                                        "<a href='{}#{}'>view dump</a>, ",
-                                        &dump_req.1.as_ref().unwrap(),
-                                        base64::encode(&serialized_req),
-                                    )
-                                } else {
-                                    "".to_string()
-                                }
-                            },
-                            test.url,
-                        )
-                    )).await;
-                }
-
-                if jsm.state == JobSMStates::Recovery {
-                    tx.send((
-                        test_id,
-                        format!(
-                            "<b>RSLV</b> Uptime checks recovered on '{}'. (<a href='{}'>view dump</a>, duration={}s, url: {})",
-                            test.name,
-                            format!(
-                                "https://r2.darknet.dev/b64d.html#{}",
-                                base64::encode(&serialized_req),
+                match jsm.state {
+                    JobSMStates::Failure => {
+                        tx.send(
+                            msg.with_state(
+                                jsm.state.clone(),
                             ),
-                            jsm.last_state_lasted,
-                            test.url,
-                        )
-                    )).await;
+                        ).await;
+                    },
+                    JobSMStates::Recovery => {
+                        tx.send(
+                            msg.with_state(
+                                jsm.state.clone(),
+                            ),
+                        ).await;
 
-                    jsm.normative();
+                        jsm.normative();
+                    },
+                    _ => {},
                 }
             }
 
@@ -778,7 +908,7 @@ impl Zuse {
             self.args
                 .config
                 .tests
-                .get(msg.0)
+                .get(msg.test_id)
                 .unwrap();
 
         for notify_channel in testcase.notify.iter() {
@@ -786,16 +916,8 @@ impl Zuse {
             = self.channels.get(notify_channel) {
                 let send_op = self.try_send(
                     &channel,
-                    &msg.1,
+                    msg.clone(),
                 ).await;
-
-                if self.args.debug() {
-                    println!(
-                        "notify dispatch. chan: {:?} msg: {}",
-                        &channel.1,
-                        &msg.1,
-                    );
-                }
 
                 send_op
                     .map_err(|err|
