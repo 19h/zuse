@@ -35,6 +35,7 @@ notifiers:
     auth:
       key: AKIXXXXXXXXXXXXXXXXX
       secret: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+      region: us-east-1
     channels:
       - name: sns_tgt1
         phone: +491701234567
