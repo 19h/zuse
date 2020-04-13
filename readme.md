@@ -3,11 +3,11 @@
 <h5 align="center">The flexible uptime bot, a descendant of the Rust async masterrace.</h5>
 
 <div align="center">
-  <a href="https://crates.io/crates/ftab-dump">
+  <a href="https://crates.io/crates/zuse">
     crates.io
   </a>
   —
-  <a href="https://github.com/19h/ftab-dump">
+  <a href="https://github.com/19h/zuse">
     Github
   </a>
 </div>
