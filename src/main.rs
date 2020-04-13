@@ -12,7 +12,7 @@ use std::time::Duration;
 use telegram_bot::prelude::*;
 use rusoto_core::{Region, HttpClient, credential};
 use rusoto_core::credential::ProvideAwsCredentials;
-use rusoto_sns::{Sns, CheckIfPhoneNumberIsOptedOutInput};
+use rusoto_sns::{Sns, CheckIfPhoneNumberIsOptedOutInput, MessageAttributeValue};
 use rusoto_sts::{Sts, GetCallerIdentityRequest, GetCallerIdentityResponse};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -45,8 +45,10 @@ struct ZuseConfigNotifierAuth {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct ZuseConfigNotifierTemplates {
+    alive_alert_subject: Option<String>,
     alive_alert_plain: Option<String>,
     alive_alert_html: Option<String>,
+    alive_resolve_subject: Option<String>,
     alive_resolve_plain: Option<String>,
     alive_resolve_html: Option<String>,
 }
@@ -63,6 +65,7 @@ enum ZuseConfigNotifierType {
 struct ZuseConfigNotifier {
     #[serde(rename = "type")]
     notifier_type: ZuseConfigNotifierType,
+    sender_id: Option<String>,
     auth: ZuseConfigNotifierAuth,
     templates: Option<ZuseConfigNotifierTemplates>,
     channels: Vec<ZuseConfigNotifierChannel>,
@@ -127,6 +130,16 @@ enum ZuseChannelType {
 type ZuseChannel = (usize, ZuseChannelType);
 type ZuseChannelMap = HashMap<String, ZuseChannel>;
 
+const DEFAULT_SENDER_ID: &'static str = "NOTICE";
+
+const DEFAULT_MSG_TMPL_ALIVE_ALRT_SUBJECT: &'static str = "ALRT {{test_name}}";
+const DEFAULT_MSG_TMPL_ALIVE_ALRT_PLAIN: &'static str = "ALRT Uptime checks failed on '{{test_name}}'. (url: {{test_url}})";
+const DEFAULT_MSG_TMPL_ALIVE_ALRT_HTML: &'static str = "<b>ALRT</b> Uptime checks failed on '{{test_name}}'. (url: {{test_url}})";
+
+const DEFAULT_MSG_TMPL_ALIVE_RSLV_SUBJECT: &'static str = "RSVL {{test_name}}";
+const DEFAULT_MSG_TMPL_ALIVE_RSLV_PLAIN: &'static str = "RSLV Uptime checks recovered on '{{test_name}}'. (duration={{time_state_lasted}}s, url: {{test_url}})";
+const DEFAULT_MSG_TMPL_ALIVE_RSLV_HTML: &'static str = "<b>RSLV</b> Uptime checks recovered on '{{test_name}}'. (duration={{time_state_lasted}}s, url: {{test_url}})";
+
 #[derive(Debug, Clone, Serialize)]
 struct ZuseJobMessage {
     test_id: usize,
@@ -153,17 +166,19 @@ impl ZuseJobMessage {
     fn resolve_custom_templates(
         &self,
         notifier: &ZuseConfigNotifier,
-    ) -> (String, String) {
+    ) -> (String, String, String) {
         let tmpl_cstm =
             notifier
                 .templates
                 .as_ref()
                 .map_or(
-                    (None, None, None, None),
+                    (None, None, None, None, None, None,),
                     |t|
                         (
+                            t.alive_alert_subject.clone(),
                             t.alive_alert_html.clone(),
                             t.alive_alert_plain.clone(),
+                            t.alive_resolve_subject.clone(),
                             t.alive_resolve_html.clone(),
                             t.alive_resolve_plain.clone(),
                         )
@@ -172,14 +187,16 @@ impl ZuseJobMessage {
         match &self.state {
             JobSMStates::Failure => {
                 (
-                    tmpl_cstm.0.unwrap_or(DEFAULT_MSG_TMPL_ALIVE_ALRT_HTML.to_string()),
-                    tmpl_cstm.1.unwrap_or(DEFAULT_MSG_TMPL_ALIVE_ALRT_PLAIN.to_string())
+                    tmpl_cstm.0.unwrap_or(DEFAULT_MSG_TMPL_ALIVE_ALRT_SUBJECT.to_string()),
+                    tmpl_cstm.1.unwrap_or(DEFAULT_MSG_TMPL_ALIVE_ALRT_HTML.to_string()),
+                    tmpl_cstm.2.unwrap_or(DEFAULT_MSG_TMPL_ALIVE_ALRT_PLAIN.to_string())
                 )
             },
             JobSMStates::Recovery => {
                 (
-                    tmpl_cstm.2.unwrap_or(DEFAULT_MSG_TMPL_ALIVE_RSLV_HTML.to_string()),
-                    tmpl_cstm.3.unwrap_or(DEFAULT_MSG_TMPL_ALIVE_RSLV_PLAIN.to_string())
+                    tmpl_cstm.3.unwrap_or(DEFAULT_MSG_TMPL_ALIVE_ALRT_SUBJECT.to_string()),
+                    tmpl_cstm.4.unwrap_or(DEFAULT_MSG_TMPL_ALIVE_RSLV_HTML.to_string()),
+                    tmpl_cstm.5.unwrap_or(DEFAULT_MSG_TMPL_ALIVE_RSLV_PLAIN.to_string())
                 )
             },
             JobSMStates::Normative => unreachable!(),
@@ -190,7 +207,7 @@ impl ZuseJobMessage {
         &self,
         args: &ZuseArgs,
         notifier_id: &usize,
-    ) -> String {
+    ) -> (String, String, String) {
         let notifier =
             args
                 .config
@@ -198,17 +215,17 @@ impl ZuseJobMessage {
                 .get(*notifier_id)
                 .unwrap();
 
-        let (tmpl_html, tmpl_plain) =
+        let (tmpl_subject, tmpl_html, tmpl_plain) =
             self.resolve_custom_templates(
                 &notifier,
             );
 
         // TODO: if user wants to selectively make
         // a platform plain or html, impl it here
-        match notifier.notifier_type {
+        let rdr_tmpls = match notifier.notifier_type {
             ZuseConfigNotifierType::Telegram => {
                 handlebars::Handlebars::new()
-                    .render(
+                    .render_template(
                         &*tmpl_html,
                         &self,
                     )
@@ -216,13 +233,28 @@ impl ZuseJobMessage {
             },
             ZuseConfigNotifierType::Sns => {
                 handlebars::Handlebars::new()
-                    .render(
+                    .render_template(
                         &*tmpl_plain,
                         &self,
                     )
                     .unwrap()
             },
-        }
+        };
+
+        let rdr_subject = handlebars::Handlebars::new()
+            .render_template(
+                &*tmpl_subject,
+                &self,
+            )
+            .unwrap();
+
+        let sender_id =
+            notifier
+                .sender_id
+                .clone()
+                .unwrap_or(DEFAULT_SENDER_ID.to_string());
+
+        (sender_id, rdr_subject, rdr_tmpls)
     }
 }
 
@@ -337,12 +369,6 @@ impl JobStateMachine {
         }
     }
 }
-
-const DEFAULT_MSG_TMPL_ALIVE_ALRT_PLAIN: &'static str = "ALRT Uptime checks failed on '{{test_name}}'. (url: {{test_url}})";
-const DEFAULT_MSG_TMPL_ALIVE_ALRT_HTML: &'static str = "<b>ALRT</b> Uptime checks failed on '{{test_name}}'. (url: {{test_url}})";
-
-const DEFAULT_MSG_TMPL_ALIVE_RSLV_PLAIN: &'static str = "ALRT Uptime checks failed on '{{test_name}}'. (url: {{test_url}})";
-const DEFAULT_MSG_TMPL_ALIVE_RSLV_HTML: &'static str = "<b>RSLV</b> Uptime checks recovered on '{{test_name}}'. (duration={{time_state_lasted}}s, url: {{test_url}})";
 
 struct Zuse {
     args: ZuseArgs,
@@ -627,13 +653,17 @@ impl Zuse {
                             }
                         }
 
-                        if (has_phone as i8 + has_target as i8 + has_topic as i8) > 1 {
+                        let var_cnt = has_phone as i8 + has_target as i8 + has_topic as i8;
+
+                        if var_cnt > 1 || var_cnt == 0 {
                             println!(
-                                "Error: notifier {} ({:?}) channel {:?} must specify at most one of phone, target_arn or topic_arn.",
+                                "Error: notifier {} ({:?}) channel {:?} must specify at least and at most one of phone, target_arn or topic_arn.",
                                 &notifier_id,
                                 &notifier.notifier_type,
                                 &channel.name,
                             );
+
+                            exit(1);
                         }
 
                         channels.insert(
@@ -709,7 +739,7 @@ impl Zuse {
                             msg.build(
                                 &self.args,
                                 &channel.0,
-                            ),
+                            ).1,
                         )
                 };
 
@@ -724,17 +754,37 @@ impl Zuse {
             ZuseNotifyType::Sns(client) => {
                 match &channel.1 {
                     ZuseChannelType::Sns(phone, target, topic) => {
-                        let msg_str = msg.build(
+                        let (sender_id, subject, message) = msg.build(
                             &self.args,
                             &channel.0,
                         );
 
+                        let mut sns_attr: HashMap<String, MessageAttributeValue> = HashMap::new();
+
+                        sns_attr.insert(
+                            "DefaultSenderID".into(),
+                            MessageAttributeValue {
+                                data_type: "String".into(),
+                                string_value: Some(sender_id.into()),
+                                binary_value: None,
+                            },
+                        );
+
+                        sns_attr.insert(
+                            "DefaultSMSType".into(),
+                            MessageAttributeValue {
+                                data_type: "String".into(),
+                                string_value: Some("Transactional".into()),
+                                binary_value: None,
+                            },
+                        );
+
                         let publish_input = rusoto_sns::PublishInput {
-                            message: msg_str,
-                            message_attributes: None,
+                            message,
+                            subject: Some(subject),
+                            message_attributes: Some(sns_attr),
                             message_structure: None,
                             phone_number: phone.clone(),
-                            subject: None,
                             target_arn: target.clone(),
                             topic_arn: topic.clone(),
                         };

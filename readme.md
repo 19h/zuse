@@ -37,7 +37,7 @@ notifiers:
       secret: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
       region: us-east-1
     channels:
-      - name: sns_tgt1
+      - name: sns_pavel
         phone: +491701234567
         # or
         target_arn: arn:aws:sns:us-east-1:XXXXXXXXXXXX:XXXXXXXX
@@ -52,6 +52,7 @@ tests:
     interval: 1
     url: https://site.com/endpoint
     notify:
+      - sns_pavel
       - tg_chan
 ```
 

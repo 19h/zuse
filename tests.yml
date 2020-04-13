@@ -4,7 +4,21 @@ notifiers:
       token: xxxx
     channels:
       - name: tg_chan
+        # channel or group or user who
+        # previous messaged the bot
         id: -1000000000000
+  - type: aws_sns
+    auth:
+      key: AKIXXXXXXXXXXXXXXXXX
+      secret: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+      region: us-east-1
+    channels:
+      - name: sns_pavel
+        phone: +491701234567
+        # or
+        target_arn: arn:aws:sns:us-east-1:XXXXXXXXXXXX:XXXXXXXX
+        # or
+        topic_arn: arn:aws:sns:us-east-1:XXXXXXXXXXXX:XXXXXXXX
 
 tests:
   - type: alive
@@ -14,4 +28,5 @@ tests:
     interval: 1
     url: https://site.com/endpoint
     notify:
+      - sns_pavel
       - tg_chan
