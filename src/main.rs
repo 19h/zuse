@@ -87,7 +87,8 @@ struct ZuseConfigTest {
     interval: u64,
     timeout: Option<u64>,
     url: String,
-    notify: Vec<String>,
+    notify: Option<Vec<String>>,
+    notify_groups: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -96,9 +97,16 @@ struct ZuseConfigInternal {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct ZuseConfigNotifyGroups {
+    name: String,
+    notify: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct ZuseConfig {
-    notifiers: Vec<ZuseConfigNotifier>,
     config: Option<ZuseConfigInternal>,
+    notifiers: Vec<ZuseConfigNotifier>,
+    notify_groups: Option<Vec<ZuseConfigNotifyGroups>>,
     tests: Vec<ZuseConfigTest>,
 }
 
@@ -129,6 +137,9 @@ enum ZuseChannelType {
 
 type ZuseChannel = (usize, ZuseChannelType);
 type ZuseChannelMap = HashMap<String, ZuseChannel>;
+
+type ZuseNotifyGroup = Vec<String>;
+type ZuseNotifyGroupMap = HashMap<String, ZuseNotifyGroup>;
 
 const DEFAULT_SENDER_ID: &'static str = "NOTICE";
 
@@ -375,6 +386,8 @@ struct Zuse {
 
     notifiers: Vec<ZuseNotifyType>,
     channels: ZuseChannelMap,
+
+    notify_groups: ZuseNotifyGroupMap,
 }
 
 impl Zuse {
@@ -688,17 +701,63 @@ impl Zuse {
             }
         }
 
-        for test in args.config.tests.iter() {
-            for test_notify in test.notify.iter() {
-                if !channels.contains_key(test_notify) {
-                    println!(
-                        "Error: '{}' (type: {:?}) references inexistent channel: {}",
-                        test.name,
-                        test.test_type,
-                        test_notify,
-                    );
+        let mut notify_groups = HashMap::new();
 
-                    exit(1);
+        if args.config.notify_groups.is_some() {
+            for notify_group in args.config.notify_groups.as_ref().unwrap() {
+                let mut notify_group_channel_refs = Vec::new();
+
+                for notify in notify_group.notify.iter() {
+                    if !channels.contains_key(notify) {
+                        println!(
+                            "Error: notify group '{}' references inexistent channel: {}",
+                            &notify_group.name,
+                            notify,
+                        );
+
+                        exit(1);
+                    }
+
+                    notify_group_channel_refs.push(
+                        notify.clone(),
+                    );
+                }
+
+                notify_groups.insert(
+                    notify_group.name.clone(),
+                    notify_group_channel_refs,
+                );
+            }
+        }
+
+        for test in args.config.tests.iter() {
+            if test.notify.is_some() {
+                for notify in test.notify.as_ref().unwrap().iter() {
+                    if !channels.contains_key(notify) {
+                        println!(
+                            "Error: '{}' (type: {:?}) references inexistent channel: {}",
+                            test.name,
+                            test.test_type,
+                            notify,
+                        );
+
+                        exit(1);
+                    }
+                }
+            }
+
+            if test.notify_groups.is_some() {
+                for notify_group in test.notify_groups.as_ref().unwrap().iter() {
+                    if !notify_groups.contains_key(notify_group) {
+                        println!(
+                            "Error: '{}' (type: {:?}) references inexistent notify group: {}",
+                            test.name,
+                            test.test_type,
+                            notify_group,
+                        );
+
+                        exit(1);
+                    }
                 }
             }
         }
@@ -707,8 +766,9 @@ impl Zuse {
             Zuse {
                 args,
 
-                notifiers,
                 channels,
+                notifiers,
+                notify_groups,
             },
         )
     }
@@ -961,9 +1021,35 @@ impl Zuse {
                 .get(msg.test_id)
                 .unwrap();
 
-        for notify_channel in testcase.notify.iter() {
+        let empty_vec = Vec::new();
+        let empty_vec_ng = Vec::new();
+
+        let test_channels =
+            testcase
+                .notify
+                .as_ref()
+                .unwrap_or(&empty_vec)
+                .iter()
+                .collect::<Vec<_>>();
+
+        let test_notify_groups =
+            testcase
+                .notify_groups
+                .as_ref()
+                .map(|ngs|
+                    ngs.iter()
+                        .flat_map(|ng|
+                            &*self.notify_groups
+                                .get(ng)
+                                .unwrap(),
+                        )
+                        .collect::<Vec<_>>()
+                )
+                .unwrap_or(empty_vec_ng);
+
+        for notify_channel in test_channels.iter().chain(test_notify_groups.iter()) {
             if let Some(channel)
-            = self.channels.get(notify_channel) {
+            = self.channels.get(*notify_channel) {
                 let send_op = self.try_send(
                     &channel,
                     msg.clone(),

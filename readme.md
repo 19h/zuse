@@ -19,7 +19,7 @@ $ cargo install zuse
 $ zuse -c tests.yml
 ```
 
-#### Example configuration
+#### Example configuration (tests.yml)
 
 ```yaml
 notifiers:
@@ -44,6 +44,13 @@ notifiers:
         # or
         topic_arn: arn:aws:sns:us-east-1:XXXXXXXXXXXX:XXXXXXXX
 
+# optional, a group of notify targets
+notify_groups:
+  - name: infra_team
+    notify:
+      - sns_pavel
+      - tg_chan
+
 tests:
   - type: alive
     name: site-com-alive-cdn
@@ -54,6 +61,10 @@ tests:
     notify:
       - sns_pavel
       - tg_chan
+    # or
+    notify_groups:
+      - infra_team
+
 ```
 
 #### Notes
