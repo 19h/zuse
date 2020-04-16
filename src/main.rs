@@ -2,16 +2,12 @@
 
 use anyhow::{Result, Context};
 use clap::{Arg, App};
-use daemonize::Daemonize;
-use futures::{StreamExt, SinkExt};
 use serde_derive::{Deserialize, Serialize};
-use std::fs::File;
 use std::collections::{HashMap, HashSet};
 use std::process::exit;
 use std::time::Duration;
 use telegram_bot::prelude::*;
 use rusoto_core::{Region, HttpClient, credential};
-use rusoto_core::credential::ProvideAwsCredentials;
 use rusoto_sns::{Sns, CheckIfPhoneNumberIsOptedOutInput, MessageAttributeValue};
 use rusoto_sts::{Sts, GetCallerIdentityRequest, GetCallerIdentityResponse};
 
@@ -82,9 +78,9 @@ struct ZuseConfigTest {
     #[serde(rename = "type")]
     test_type: ZuseConfigTestType,
     name: String,
-    retries: u64,
-    recovery: u64,
-    interval: u64,
+    retries: Option<u64>,
+    recovery: Option<u64>,
+    interval: Option<u64>,
     timeout: Option<u64>,
     url: String,
     notify: Option<Vec<String>>,
@@ -94,6 +90,16 @@ struct ZuseConfigTest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct ZuseConfigInternal {
     dump_prefix_url: Option<String>,
+    default_retries: Option<u64>,
+    default_recovery: Option<u64>,
+    default_interval: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct ZuseConfigDefaults {
+    retries: Option<u64>,
+    recovery: Option<u64>,
+    interval: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -105,6 +111,7 @@ struct ZuseConfigNotifyGroups {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct ZuseConfig {
     config: Option<ZuseConfigInternal>,
+    defaults: Option<ZuseConfigDefaults>,
     notifiers: Vec<ZuseConfigNotifier>,
     notify_groups: Option<Vec<ZuseConfigNotifyGroups>>,
     tests: Vec<ZuseConfigTest>,
@@ -205,7 +212,7 @@ impl ZuseJobMessage {
             },
             JobSMStates::Recovery => {
                 (
-                    tmpl_cstm.3.unwrap_or(DEFAULT_MSG_TMPL_ALIVE_ALRT_SUBJECT.to_string()),
+                    tmpl_cstm.3.unwrap_or(DEFAULT_MSG_TMPL_ALIVE_RSLV_SUBJECT.to_string()),
                     tmpl_cstm.4.unwrap_or(DEFAULT_MSG_TMPL_ALIVE_RSLV_HTML.to_string()),
                     tmpl_cstm.5.unwrap_or(DEFAULT_MSG_TMPL_ALIVE_RSLV_PLAIN.to_string())
                 )
@@ -397,367 +404,447 @@ impl Zuse {
         let mut notifiers = Vec::new();
 
         let mut channels: ZuseChannelMap = HashMap::new();
+        let mut notify_groups = HashMap::new();
 
-        for (notifier_id, notifier) in args.config.notifiers.iter().enumerate() {
-            if notifier.channels.is_empty() {
-                // there's no point to setup this listener
-                // if there's no channel associated with it
-                continue;
-            }
+        /*
+            VALIDATE CONFIGURATION AND TEST LAYOUT
+        */
 
-            match notifier.notifier_type {
-                ZuseConfigNotifierType::Telegram => {
-                    if let None = notifier.auth.token.as_ref() {
-                        println!(
-                            "Error: notifier {:?} ({:?}) must specify a token.",
-                            &notifier_id,
-                            &notifier.notifier_type,
-                        );
+        {
+            for (notifier_id, notifier) in args.config.notifiers.iter().enumerate() {
+                if notifier.channels.is_empty() {
+                    // there's no point to setup this listener
+                    // if there's no channel associated with it
+                    continue;
+                }
 
-                        exit(1);
-                    }
-
-                    let token =
-                        notifier.auth.token
-                            .as_ref()
-                            .unwrap()
-                            .clone();
-
-                    let mut api = telegram_bot::Api::new(
-                        token.clone(),
-                    );
-
-                    if args.verbose() {
-                        println!(
-                            "Configured notifier {} (type: {:?}, token: {})..",
-                            notifier_id,
-                            &notifier.notifier_type,
-                            &token,
-                        );
-                    }
-
-                    if api.send(
-                        telegram_bot::GetMe,
-                    ).await.is_err() {
-                        println!(
-                            "Error: notifier {} ({:?}) has invalid telegram token. (token: {})",
-                            notifier_id,
-                            &notifier.notifier_type,
-                            &token,
-                        );
-
-                        exit(1);
-                    }
-
-                    for channel in notifier.channels.iter() {
-                        let chan_id =
-                            match channel.id.as_ref() {
-                                Some(cid) => cid,
-                                None => {
-                                    println!(
-                                        "Error: channel {:?} must specify an id.",
-                                        &channel.name,
-                                    );
-
-                                    exit(1);
-                                }
-                            };
-
-                        if api.send(
-                            telegram_bot::ChannelId::new(
-                                chan_id.clone().parse::<i64>().unwrap()
-                            ).get_chat()
-                        ).await.is_err() {
+                match notifier.notifier_type {
+                    ZuseConfigNotifierType::Telegram => {
+                        if let None = notifier.auth.token.as_ref() {
                             println!(
-                                "Error: channel {:?} could not be validated. (cid: {})",
-                                &channel.name,
-                                chan_id,
+                                "Error: notifier {:?} ({:?}) must specify a token.",
+                                &notifier_id,
+                                &notifier.notifier_type,
                             );
 
                             exit(1);
                         }
 
-                        if let Err(_) = chan_id.parse::<i64>() {
-                            println!(
-                                "Error: channel {:?} must have valid i64 id. (cid: {})",
-                                &channel.name,
-                                chan_id,
-                            );
+                        let token =
+                            notifier.auth.token
+                                .as_ref()
+                                .unwrap()
+                                .clone();
 
-                            exit(1);
-                        }
-
-                        channels.insert(
-                            channel.name.clone(),
-                            (
-                                notifier_id,
-                                ZuseChannelType::Telegram(
-                                    chan_id.clone(),
-                                ),
-                            ),
+                        let api = telegram_bot::Api::new(
+                            token.clone(),
                         );
 
                         if args.verbose() {
                             println!(
-                                "Registered channel (iid: {}, name: {}, id: {})..",
+                                "Configured notifier {} (type: {:?}, token: {})..",
                                 notifier_id,
-                                channel.name.clone(),
-                                chan_id.clone(),
-                            );
-                        }
-                    }
-
-                    notifiers.push(
-                        ZuseNotifyType::Telegram(
-                            api,
-                        ),
-                    );
-                }
-                ZuseConfigNotifierType::Sns => {
-                    let has_key_and_secret =
-                        notifier.auth.key.is_some()
-                            && notifier.auth.secret.is_some();
-
-                    if let None = notifier.auth.region {
-                        println!(
-                            "Error: notifier {:?} ({:?}) must specify region.",
-                            &notifier_id,
-                            &notifier.notifier_type,
-                        );
-
-                        exit(1);
-                    }
-
-                    let region =
-                        (*notifier.auth.region.as_ref().unwrap()).parse::<Region>()?;
-
-                    let (mut sts_client, mut sns_client) = {
-                        if has_key_and_secret {
-                            let cred = credential::StaticProvider::new(
-                                notifier.auth.key.as_ref().unwrap().clone(),
-                                notifier.auth.secret.as_ref().unwrap().clone(),
-                                None,
-                                None,
-                            );
-
-                            (
-                                rusoto_sts::StsClient::new_with(
-                                    HttpClient::new()?,
-                                    cred.clone(),
-                                    region.clone(),
-                                ),
-                                rusoto_sns::SnsClient::new_with(
-                                    HttpClient::new()?,
-                                    cred,
-                                    region,
-                                )
-                            )
-                        } else {
-                            let env_vars =
-                                std::env::vars()
-                                    .collect::<Vec<_>>()
-                                    .iter()
-                                    .cloned()
-                                    .map(|t| t.0)
-                                    .collect::<HashSet<_>>();
-
-                            let has_correct_env_creds =
-                                env_vars.contains("AWS_ACCESS_KEY_ID")
-                                    && env_vars.contains("AWS_SECRET_ACCESS_KEY");
-
-                            if !has_correct_env_creds {
-                                println!(
-                                    "Error: notifier {:?} ({:?}) has no key and secret set, defaulting to env creds.",
-                                    &notifier_id,
-                                    &notifier.notifier_type,
-                                );
-
-                                println!(
-                                    "Error: notifier {:?} ({:?}) requires env (AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY) to be set.",
-                                    &notifier_id,
-                                    &notifier.notifier_type,
-                                );
-
-                                exit(1);
-                            }
-
-                            let cred =
-                                credential::EnvironmentProvider::default();
-
-                            (
-                                rusoto_sts::StsClient::new_with(
-                                    HttpClient::new()?,
-                                    cred.clone(),
-                                    region.clone(),
-                                ),
-                                rusoto_sns::SnsClient::new_with(
-                                    HttpClient::new()?,
-                                    cred,
-                                    region,
-                                )
-                            )
-                        }
-                    };
-
-                    match sts_client.get_caller_identity(GetCallerIdentityRequest {})
-                        .await {
-                        Ok(GetCallerIdentityResponse {
-                               account,
-                               arn,
-                               user_id,
-                           }) => {
-                            if args.verbose() {
-                                println!(
-                                    "Configured notifier (type: {}, key: {}, iid: {})..",
-                                    "telegram",
-                                    &notifier.auth.key.as_ref().unwrap(),
-                                    notifier_id,
-                                );
-
-                                println!(
-                                    "Using STS identity (account: {}, arn: {}, user_id: {})..",
-                                    account.unwrap_or("".to_string()),
-                                    arn.unwrap_or("".to_string()),
-                                    user_id.unwrap_or("".to_string()),
-                                );
-                            }
-                        }
-                        Err(err) => {
-                            println!(
-                                "Error: notifier {:?} ({:?}) could not validate AWS credentials.",
-                                &notifier_id,
                                 &notifier.notifier_type,
+                                &token,
                             );
+                        }
 
-                            if args.verbose() {
-                                println!(
-                                    "Error: {:?}",
-                                    err,
-                                );
-                            }
+                        if api.send(
+                            telegram_bot::GetMe,
+                        ).await.is_err() {
+                            println!(
+                                "Error: notifier {} ({:?}) has invalid telegram token. (token: {})",
+                                notifier_id,
+                                &notifier.notifier_type,
+                                &token,
+                            );
 
                             exit(1);
                         }
-                    }
 
-                    for channel in notifier.channels.iter() {
-                        let has_phone = channel.phone.is_some();
-                        let has_target = channel.target_arn.is_some();
-                        let has_topic = channel.topic_arn.is_some();
+                        for channel in notifier.channels.iter() {
+                            let chan_id =
+                                match channel.id.as_ref() {
+                                    Some(cid) => cid,
+                                    None => {
+                                        println!(
+                                            "Error: channel {:?} must specify an id.",
+                                            &channel.name,
+                                        );
 
-                        if has_phone {
-                            let opt_out_check = sns_client.check_if_phone_number_is_opted_out(
-                                CheckIfPhoneNumberIsOptedOutInput {
-                                    phone_number: channel.phone.as_ref().unwrap().clone(),
-                                }
-                            ).await?;
+                                        exit(1);
+                                    }
+                                };
 
-                            if opt_out_check.is_opted_out.is_some()
-                                && opt_out_check.is_opted_out.unwrap() == true {
+                            if api.send(
+                                telegram_bot::ChannelId::new(
+                                    chan_id.clone().parse::<i64>().unwrap()
+                                ).get_chat()
+                            ).await.is_err() {
                                 println!(
-                                    "Error: notifier {} ({:?}) channel {:?}: {:?} has explicitly opted out from receing SMS via SNS.",
-                                    &notifier_id,
-                                    &notifier.notifier_type,
+                                    "Error: channel {:?} could not be validated. (cid: {})",
                                     &channel.name,
-                                    channel.phone.as_ref().unwrap(),
+                                    chan_id,
                                 );
 
                                 exit(1);
                             }
-                        }
 
-                        let var_cnt = has_phone as i8 + has_target as i8 + has_topic as i8;
+                            if let Err(_) = chan_id.parse::<i64>() {
+                                println!(
+                                    "Error: channel {:?} must have valid i64 id. (cid: {})",
+                                    &channel.name,
+                                    chan_id,
+                                );
 
-                        if var_cnt > 1 || var_cnt == 0 {
-                            println!(
-                                "Error: notifier {} ({:?}) channel {:?} must specify at least and at most one of phone, target_arn or topic_arn.",
-                                &notifier_id,
-                                &notifier.notifier_type,
-                                &channel.name,
+                                exit(1);
+                            }
+
+                            channels.insert(
+                                channel.name.clone(),
+                                (
+                                    notifier_id,
+                                    ZuseChannelType::Telegram(
+                                        chan_id.clone(),
+                                    ),
+                                ),
                             );
 
-                            exit(1);
+                            if args.verbose() {
+                                println!(
+                                    "Registered channel (iid: {}, name: {}, id: {})..",
+                                    notifier_id,
+                                    channel.name.clone(),
+                                    chan_id.clone(),
+                                );
+                            }
                         }
 
-                        channels.insert(
-                            channel.name.clone(),
-                            (
-                                notifier_id,
-                                ZuseChannelType::Sns(
-                                    channel.phone.clone(),
-                                    channel.target_arn.clone(),
-                                    channel.topic_arn.clone(),
-                                ),
+                        notifiers.push(
+                            ZuseNotifyType::Telegram(
+                                api,
                             ),
                         );
                     }
+                    ZuseConfigNotifierType::Sns => {
+                        let has_key_and_secret =
+                            notifier.auth.key.is_some()
+                                && notifier.auth.secret.is_some();
 
-                    notifiers.push(
-                        ZuseNotifyType::Sns(
-                            sns_client,
-                        ),
-                    );
-                },
+                        if let None = notifier.auth.region {
+                            println!(
+                                "Error: notifier {:?} ({:?}) must specify region.",
+                                &notifier_id,
+                                &notifier.notifier_type,
+                            );
+
+                            exit(1);
+                        }
+
+                        let region =
+                            (*notifier.auth.region.as_ref().unwrap()).parse::<Region>()?;
+
+                        let (sts_client, sns_client) = {
+                            if has_key_and_secret {
+                                let cred = credential::StaticProvider::new(
+                                    notifier.auth.key.as_ref().unwrap().clone(),
+                                    notifier.auth.secret.as_ref().unwrap().clone(),
+                                    None,
+                                    None,
+                                );
+
+                                (
+                                    rusoto_sts::StsClient::new_with(
+                                        HttpClient::new()?,
+                                        cred.clone(),
+                                        region.clone(),
+                                    ),
+                                    rusoto_sns::SnsClient::new_with(
+                                        HttpClient::new()?,
+                                        cred,
+                                        region,
+                                    )
+                                )
+                            } else {
+                                let env_vars =
+                                    std::env::vars()
+                                        .collect::<Vec<_>>()
+                                        .iter()
+                                        .cloned()
+                                        .map(|t| t.0)
+                                        .collect::<HashSet<_>>();
+
+                                let has_correct_env_creds =
+                                    env_vars.contains("AWS_ACCESS_KEY_ID")
+                                        && env_vars.contains("AWS_SECRET_ACCESS_KEY");
+
+                                if !has_correct_env_creds {
+                                    println!(
+                                        "Error: notifier {:?} ({:?}) has no key and secret set, defaulting to env creds.",
+                                        &notifier_id,
+                                        &notifier.notifier_type,
+                                    );
+
+                                    println!(
+                                        "Error: notifier {:?} ({:?}) requires env (AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY) to be set.",
+                                        &notifier_id,
+                                        &notifier.notifier_type,
+                                    );
+
+                                    exit(1);
+                                }
+
+                                let cred =
+                                    credential::EnvironmentProvider::default();
+
+                                (
+                                    rusoto_sts::StsClient::new_with(
+                                        HttpClient::new()?,
+                                        cred.clone(),
+                                        region.clone(),
+                                    ),
+                                    rusoto_sns::SnsClient::new_with(
+                                        HttpClient::new()?,
+                                        cred,
+                                        region,
+                                    )
+                                )
+                            }
+                        };
+
+                        match sts_client.get_caller_identity(GetCallerIdentityRequest {})
+                            .await {
+                            Ok(GetCallerIdentityResponse {
+                                   account,
+                                   arn,
+                                   user_id,
+                               }) => {
+                                if args.verbose() {
+                                    println!(
+                                        "Configured notifier (type: {}, key: {}, iid: {})..",
+                                        "telegram",
+                                        &notifier.auth.key.as_ref().unwrap(),
+                                        notifier_id,
+                                    );
+
+                                    println!(
+                                        "Using STS identity (account: {}, arn: {}, user_id: {})..",
+                                        account.unwrap_or("".to_string()),
+                                        arn.unwrap_or("".to_string()),
+                                        user_id.unwrap_or("".to_string()),
+                                    );
+                                }
+                            }
+                            Err(err) => {
+                                println!(
+                                    "Error: notifier {:?} ({:?}) could not validate AWS credentials.",
+                                    &notifier_id,
+                                    &notifier.notifier_type,
+                                );
+
+                                if args.verbose() {
+                                    println!(
+                                        "Error: {:?}",
+                                        err,
+                                    );
+                                }
+
+                                exit(1);
+                            }
+                        }
+
+                        for channel in notifier.channels.iter() {
+                            let has_phone = channel.phone.is_some();
+                            let has_target = channel.target_arn.is_some();
+                            let has_topic = channel.topic_arn.is_some();
+
+                            if has_phone {
+                                let opt_out_check = sns_client.check_if_phone_number_is_opted_out(
+                                    CheckIfPhoneNumberIsOptedOutInput {
+                                        phone_number: channel.phone.as_ref().unwrap().clone(),
+                                    }
+                                ).await?;
+
+                                if opt_out_check.is_opted_out.is_some()
+                                    && opt_out_check.is_opted_out.unwrap() == true {
+                                    println!(
+                                        "Error: notifier {} ({:?}) channel {:?}: {:?} has explicitly opted out from receing SMS via SNS.",
+                                        &notifier_id,
+                                        &notifier.notifier_type,
+                                        &channel.name,
+                                        channel.phone.as_ref().unwrap(),
+                                    );
+
+                                    exit(1);
+                                }
+                            }
+
+                            let var_cnt = has_phone as i8 + has_target as i8 + has_topic as i8;
+
+                            if var_cnt > 1 || var_cnt == 0 {
+                                println!(
+                                    "Error: notifier {} ({:?}) channel {:?} must specify at least and at most one of phone, target_arn or topic_arn.",
+                                    &notifier_id,
+                                    &notifier.notifier_type,
+                                    &channel.name,
+                                );
+
+                                exit(1);
+                            }
+
+                            channels.insert(
+                                channel.name.clone(),
+                                (
+                                    notifier_id,
+                                    ZuseChannelType::Sns(
+                                        channel.phone.clone(),
+                                        channel.target_arn.clone(),
+                                        channel.topic_arn.clone(),
+                                    ),
+                                ),
+                            );
+                        }
+
+                        notifiers.push(
+                            ZuseNotifyType::Sns(
+                                sns_client,
+                            ),
+                        );
+                    },
+                }
             }
         }
 
-        let mut notify_groups = HashMap::new();
+        /*
+            VERIFY AND CONSTRUCT NOTIFY GROUPS
+        */
 
-        if args.config.notify_groups.is_some() {
-            for notify_group in args.config.notify_groups.as_ref().unwrap() {
-                let mut notify_group_channel_refs = Vec::new();
+        {
+            if args.config.notify_groups.is_some() {
+                for notify_group in args.config.notify_groups.as_ref().unwrap() {
+                    let mut notify_group_channel_refs = Vec::new();
 
-                for notify in notify_group.notify.iter() {
-                    if !channels.contains_key(notify) {
-                        println!(
-                            "Error: notify group '{}' references inexistent channel: {}",
-                            &notify_group.name,
-                            notify,
+                    for notify in notify_group.notify.iter() {
+                        if !channels.contains_key(notify) {
+                            println!(
+                                "Error: notify group '{}' references inexistent channel: {}",
+                                &notify_group.name,
+                                notify,
+                            );
+
+                            exit(1);
+                        }
+
+                        notify_group_channel_refs.push(
+                            notify.clone(),
                         );
-
-                        exit(1);
                     }
 
-                    notify_group_channel_refs.push(
-                        notify.clone(),
+                    notify_groups.insert(
+                        notify_group.name.clone(),
+                        notify_group_channel_refs,
                     );
                 }
-
-                notify_groups.insert(
-                    notify_group.name.clone(),
-                    notify_group_channel_refs,
-                );
             }
         }
 
-        for test in args.config.tests.iter() {
-            if test.notify.is_some() {
-                for notify in test.notify.as_ref().unwrap().iter() {
-                    if !channels.contains_key(notify) {
-                        println!(
-                            "Error: '{}' (type: {:?}) references inexistent channel: {}",
-                            test.name,
-                            test.test_type,
-                            notify,
-                        );
+        /*
+            VERIFY TEST NOTIFY TARGETS AND NOTIFY GROUPS
+        */
 
-                        exit(1);
+        {
+            for test in args.config.tests.iter() {
+                if test.notify.is_some() {
+                    for notify in test.notify.as_ref().unwrap().iter() {
+                        if !channels.contains_key(notify) {
+                            println!(
+                                "Error: '{}' (type: {:?}) references inexistent channel: {}",
+                                test.name,
+                                test.test_type,
+                                notify,
+                            );
+
+                            exit(1);
+                        }
+                    }
+                }
+
+                if test.notify_groups.is_some() {
+                    for notify_group in test.notify_groups.as_ref().unwrap().iter() {
+                        if !notify_groups.contains_key(notify_group) {
+                            println!(
+                                "Error: '{}' (type: {:?}) references inexistent notify group: {}",
+                                test.name,
+                                test.test_type,
+                                notify_group,
+                            );
+
+                            exit(1);
+                        }
                     }
                 }
             }
+        }
 
-            if test.notify_groups.is_some() {
-                for notify_group in test.notify_groups.as_ref().unwrap().iter() {
-                    if !notify_groups.contains_key(notify_group) {
-                        println!(
-                            "Error: '{}' (type: {:?}) references inexistent notify group: {}",
-                            test.name,
-                            test.test_type,
-                            notify_group,
-                        );
+        /*
+            VERIFY RETRY, RECOVERY AND INTERVAL, APPLY DEFAULS IF NEEDED
+        */
 
-                        exit(1);
-                    }
+        {
+            let (def_ret, def_rec, def_int) =
+                args.config
+                    .defaults
+                    .as_ref()
+                    .map(|defaults|
+                        (
+                            defaults.retries,
+                            defaults.recovery,
+                            defaults.interval,
+                        )
+                    )
+                    .unwrap_or((None, None, None));
+
+            for test in args.config.tests.iter_mut() {
+                if test.retries.is_none() && def_ret.is_none() {
+                    println!(
+                        "Error: '{}' (type: {:?}) lacks 'retries', but no default was set.",
+                        test.name,
+                        test.test_type,
+                    );
+
+                    exit(1);
+                }
+
+                if test.retries.is_none() && def_ret.is_some() {
+                    test.retries = def_ret.clone();
+                }
+
+                if test.recovery.is_none() && def_rec.is_none() {
+                    println!(
+                        "Error: '{}' (type: {:?}) lacks 'recovery', but no default was set.",
+                        test.name,
+                        test.test_type,
+                    );
+
+                    exit(1);
+                }
+
+                if test.recovery.is_none() && def_rec.is_some() {
+                    test.recovery = def_rec.clone();
+                }
+
+                if test.interval.is_none() && def_int.is_none() {
+                    println!(
+                        "Error: '{}' (type: {:?}) lacks 'interval', but no default was set.",
+                        test.name,
+                        test.test_type,
+                    );
+
+                    exit(1);
+                }
+
+                if test.interval.is_none() && def_int.is_some() {
+                    test.interval = def_int.clone();
                 }
             }
         }
@@ -867,8 +954,8 @@ impl Zuse {
         mut tx: tokio::sync::mpsc::Sender<ZuseJobMessage>,
     ) -> Result<()> {
         let mut jsm = JobStateMachine::new(
-            test.retries,
-            test.recovery,
+            test.retries.unwrap().clone(),
+            test.recovery.unwrap().clone(),
         );
 
         let dump_req = {
@@ -985,12 +1072,12 @@ impl Zuse {
 
             tokio::time::delay_for(
                 Duration::from_secs(
-                    test.interval,
+                    test.interval.unwrap().clone(),
                 ),
             ).await;
         }
 
-        Ok(())
+        // unreachable
     }
 
     async fn test_runner(

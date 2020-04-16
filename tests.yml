@@ -7,7 +7,7 @@ notifiers:
         # channel or group or user who
         # previous messaged the bot
         id: -1000000000000
-  - type: aws_sns
+  - type: sns
     auth:
       key: AKIXXXXXXXXXXXXXXXXX
       secret: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
