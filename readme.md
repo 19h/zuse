@@ -28,10 +28,9 @@ notifiers:
       token: xxxx
     channels:
       - name: tg_chan
-        # channel or group or user who
-        # previous messaged the bot
+        # channel or group or user
         id: -1000000000000
-  - type: aws_sns
+  - type: sns
     auth:
       key: AKIXXXXXXXXXXXXXXXXX
       secret: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
@@ -51,20 +50,28 @@ notify_groups:
       - sns_pavel
       - tg_chan
 
+# optional, can also be on each test
+defaults:
+  retries: 3
+  recovery: 3
+  interval: 10
+  timeout: 30
+
 tests:
-  - type: alive
+  - type: http_ok
     name: site-com-alive-cdn
-    retries: 3
-    recovery: 3
-    interval: 1
-    url: https://site.com/endpoint
+    target: https://site.com/endpoint
     notify:
       - sns_pavel
       - tg_chan
     # or
     notify_groups:
       - infra_team
-
+  - type: tcp_ok
+    name: server-smoke-test
+    target: 127.0.0.1:3000
+    notify_groups:
+      - infra_team
 ```
 
 #### Notes

@@ -4,8 +4,7 @@ notifiers:
       token: xxxx
     channels:
       - name: tg_chan
-        # channel or group or user who
-        # previous messaged the bot
+        # channel or group or user
         id: -1000000000000
   - type: sns
     auth:
@@ -27,8 +26,7 @@ notify_groups:
       - sns_pavel
       - tg_chan
 
-# can be overriden by setting
-# these on the test level
+# optional, can also be on each test
 defaults:
   retries: 3
   recovery: 3
@@ -43,5 +41,10 @@ tests:
       - sns_pavel
       - tg_chan
     # or
+    notify_groups:
+      - infra_team
+  - type: tcp_ok
+    name: server-smoke-test
+    target: 127.0.0.1:3000
     notify_groups:
       - infra_team
