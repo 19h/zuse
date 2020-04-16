@@ -41,12 +41,12 @@ struct ZuseConfigNotifierAuth {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct ZuseConfigNotifierTemplates {
-    alive_alert_subject: Option<String>,
-    alive_alert_plain: Option<String>,
-    alive_alert_html: Option<String>,
-    alive_resolve_subject: Option<String>,
-    alive_resolve_plain: Option<String>,
-    alive_resolve_html: Option<String>,
+    alert_subject: Option<String>,
+    alert_plain: Option<String>,
+    alert_html: Option<String>,
+    resolve_subject: Option<String>,
+    resolve_plain: Option<String>,
+    resolve_html: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -69,30 +69,31 @@ struct ZuseConfigNotifier {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 enum ZuseConfigTestType {
-    #[serde(rename = "alive")]
-    Alive
+    #[serde(rename = "http_ok")]
+    HttpOk
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct ZuseConfigTest {
     #[serde(rename = "type")]
     test_type: ZuseConfigTestType,
+
     name: String,
+    url: String,
+
+    notify: Option<Vec<String>>,
+    notify_groups: Option<Vec<String>>,
+
+    // can be overriden by defaults
     retries: Option<u64>,
     recovery: Option<u64>,
     interval: Option<u64>,
     timeout: Option<u64>,
-    url: String,
-    notify: Option<Vec<String>>,
-    notify_groups: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct ZuseConfigInternal {
     dump_prefix_url: Option<String>,
-    default_retries: Option<u64>,
-    default_recovery: Option<u64>,
-    default_interval: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -100,6 +101,7 @@ struct ZuseConfigDefaults {
     retries: Option<u64>,
     recovery: Option<u64>,
     interval: Option<u64>,
+    timeout: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -150,13 +152,13 @@ type ZuseNotifyGroupMap = HashMap<String, ZuseNotifyGroup>;
 
 const DEFAULT_SENDER_ID: &'static str = "NOTICE";
 
-const DEFAULT_MSG_TMPL_ALIVE_ALRT_SUBJECT: &'static str = "ALRT {{test_name}}";
-const DEFAULT_MSG_TMPL_ALIVE_ALRT_PLAIN: &'static str = "ALRT Uptime checks failed on '{{test_name}}'. (url: {{test_url}})";
-const DEFAULT_MSG_TMPL_ALIVE_ALRT_HTML: &'static str = "<b>ALRT</b> Uptime checks failed on '{{test_name}}'. (url: {{test_url}})";
+const DEFAULT_MSG_TMPL_ALRT_SUBJECT: &'static str = "ALRT {{test_name}}";
+const DEFAULT_MSG_TMPL_ALRT_PLAIN: &'static str = "ALRT Uptime checks failed on '{{test_name}}'. (url: {{test_url}})";
+const DEFAULT_MSG_TMPL_ALRT_HTML: &'static str = "<b>ALRT</b> Uptime checks failed on '{{test_name}}'. (url: {{test_url}})";
 
-const DEFAULT_MSG_TMPL_ALIVE_RSLV_SUBJECT: &'static str = "RSVL {{test_name}}";
-const DEFAULT_MSG_TMPL_ALIVE_RSLV_PLAIN: &'static str = "RSLV Uptime checks recovered on '{{test_name}}'. (duration={{time_state_lasted}}s, url: {{test_url}})";
-const DEFAULT_MSG_TMPL_ALIVE_RSLV_HTML: &'static str = "<b>RSLV</b> Uptime checks recovered on '{{test_name}}'. (duration={{time_state_lasted}}s, url: {{test_url}})";
+const DEFAULT_MSG_TMPL_RSLV_SUBJECT: &'static str = "RSVL {{test_name}}";
+const DEFAULT_MSG_TMPL_RSLV_PLAIN: &'static str = "RSLV Uptime checks recovered on '{{test_name}}'. (duration={{time_state_lasted}}s, url: {{test_url}})";
+const DEFAULT_MSG_TMPL_RSLV_HTML: &'static str = "<b>RSLV</b> Uptime checks recovered on '{{test_name}}'. (duration={{time_state_lasted}}s, url: {{test_url}})";
 
 #[derive(Debug, Clone, Serialize)]
 struct ZuseJobMessage {
@@ -193,28 +195,28 @@ impl ZuseJobMessage {
                     (None, None, None, None, None, None,),
                     |t|
                         (
-                            t.alive_alert_subject.clone(),
-                            t.alive_alert_html.clone(),
-                            t.alive_alert_plain.clone(),
-                            t.alive_resolve_subject.clone(),
-                            t.alive_resolve_html.clone(),
-                            t.alive_resolve_plain.clone(),
+                            t.alert_subject.clone(),
+                            t.alert_html.clone(),
+                            t.alert_plain.clone(),
+                            t.resolve_subject.clone(),
+                            t.resolve_html.clone(),
+                            t.resolve_plain.clone(),
                         )
                 );
 
         match &self.state {
             JobSMStates::Failure => {
                 (
-                    tmpl_cstm.0.unwrap_or(DEFAULT_MSG_TMPL_ALIVE_ALRT_SUBJECT.to_string()),
-                    tmpl_cstm.1.unwrap_or(DEFAULT_MSG_TMPL_ALIVE_ALRT_HTML.to_string()),
-                    tmpl_cstm.2.unwrap_or(DEFAULT_MSG_TMPL_ALIVE_ALRT_PLAIN.to_string())
+                    tmpl_cstm.0.unwrap_or(DEFAULT_MSG_TMPL_ALRT_SUBJECT.to_string()),
+                    tmpl_cstm.1.unwrap_or(DEFAULT_MSG_TMPL_ALRT_HTML.to_string()),
+                    tmpl_cstm.2.unwrap_or(DEFAULT_MSG_TMPL_ALRT_PLAIN.to_string())
                 )
             },
             JobSMStates::Recovery => {
                 (
-                    tmpl_cstm.3.unwrap_or(DEFAULT_MSG_TMPL_ALIVE_RSLV_SUBJECT.to_string()),
-                    tmpl_cstm.4.unwrap_or(DEFAULT_MSG_TMPL_ALIVE_RSLV_HTML.to_string()),
-                    tmpl_cstm.5.unwrap_or(DEFAULT_MSG_TMPL_ALIVE_RSLV_PLAIN.to_string())
+                    tmpl_cstm.3.unwrap_or(DEFAULT_MSG_TMPL_RSLV_SUBJECT.to_string()),
+                    tmpl_cstm.4.unwrap_or(DEFAULT_MSG_TMPL_RSLV_HTML.to_string()),
+                    tmpl_cstm.5.unwrap_or(DEFAULT_MSG_TMPL_RSLV_PLAIN.to_string())
                 )
             },
             JobSMStates::Normative => unreachable!(),
@@ -239,7 +241,7 @@ impl ZuseJobMessage {
             );
 
         // TODO: if user wants to selectively make
-        // a platform plain or html, impl it here
+        //       a platform plain or html, impl it here
         let rdr_tmpls = match notifier.notifier_type {
             ZuseConfigNotifierType::Telegram => {
                 handlebars::Handlebars::new()
@@ -791,7 +793,12 @@ impl Zuse {
         */
 
         {
-            let (def_ret, def_rec, def_int) =
+            let (
+                def_retries,
+                def_recovery,
+                def_interval,
+                def_timeout,
+            ) =
                 args.config
                     .defaults
                     .as_ref()
@@ -800,12 +807,13 @@ impl Zuse {
                             defaults.retries,
                             defaults.recovery,
                             defaults.interval,
+                            defaults.timeout,
                         )
                     )
-                    .unwrap_or((None, None, None));
+                    .unwrap_or((None, None, None, None));
 
             for test in args.config.tests.iter_mut() {
-                if test.retries.is_none() && def_ret.is_none() {
+                if test.retries.is_none() && def_retries.is_none() {
                     println!(
                         "Error: '{}' (type: {:?}) lacks 'retries', but no default was set.",
                         test.name,
@@ -815,11 +823,11 @@ impl Zuse {
                     exit(1);
                 }
 
-                if test.retries.is_none() && def_ret.is_some() {
-                    test.retries = def_ret.clone();
+                if test.retries.is_none() && def_retries.is_some() {
+                    test.retries = def_retries.clone();
                 }
 
-                if test.recovery.is_none() && def_rec.is_none() {
+                if test.recovery.is_none() && def_recovery.is_none() {
                     println!(
                         "Error: '{}' (type: {:?}) lacks 'recovery', but no default was set.",
                         test.name,
@@ -829,11 +837,11 @@ impl Zuse {
                     exit(1);
                 }
 
-                if test.recovery.is_none() && def_rec.is_some() {
-                    test.recovery = def_rec.clone();
+                if test.recovery.is_none() && def_recovery.is_some() {
+                    test.recovery = def_recovery.clone();
                 }
 
-                if test.interval.is_none() && def_int.is_none() {
+                if test.interval.is_none() && def_interval.is_none() {
                     println!(
                         "Error: '{}' (type: {:?}) lacks 'interval', but no default was set.",
                         test.name,
@@ -843,8 +851,22 @@ impl Zuse {
                     exit(1);
                 }
 
-                if test.interval.is_none() && def_int.is_some() {
-                    test.interval = def_int.clone();
+                if test.interval.is_none() && def_interval.is_some() {
+                    test.interval = def_interval.clone();
+                }
+
+                if test.timeout.is_none() && def_timeout.is_none() {
+                    println!(
+                        "Error: '{}' (type: {:?}) lacks 'timeout', but no default was set.",
+                        test.name,
+                        test.test_type,
+                    );
+
+                    exit(1);
+                }
+
+                if test.timeout.is_none() && def_timeout.is_some() {
+                    test.timeout = def_timeout.clone();
                 }
             }
         }
@@ -1086,7 +1108,7 @@ impl Zuse {
         mut tx: tokio::sync::mpsc::Sender<ZuseJobMessage>,
     ) -> Result<()> {
         match test.test_type {
-            ZuseConfigTestType::Alive =>
+            ZuseConfigTestType::HttpOk =>
                 Zuse::test_runner_alive(
                     &args,
                     (test_id, test),

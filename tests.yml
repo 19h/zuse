@@ -28,7 +28,7 @@ notify_groups:
       - tg_chan
 
 tests:
-  - type: alive
+  - type: http_ok
     name: site-com-alive-cdn
     retries: 3
     recovery: 3
