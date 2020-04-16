@@ -1099,23 +1099,6 @@ impl Zuse {
     }
 }
 
-#fn try_daemonize() -> Result<()> {
-#    let stdout = File::create("/dev/null").unwrap();
-#    let stderr = File::create("/dev/null").unwrap();
-#
-#    let daemonize = Daemonize::new()
-#        .user("nobody")
-#        .group("daemon")
-#        .stdout(stdout)
-#        .stderr(stderr)
-#        .exit_action(|| println!("Executed before master process exits"))
-#        .privileged_action(|| "Failed to drop privileges..");
-#
-#    daemonize.start()?;
-#
-#    Ok(())
-#}
-
 fn read_config(config_path: &str) -> Result<ZuseConfig> {
     Ok(
         serde_yaml::from_str::<ZuseConfig>(
@@ -1150,11 +1133,6 @@ async fn main() -> Result<()> {
             .get_matches()
             .clone()
     };
-
-    if matches.is_present("daemon") {
-        try_daemonize()
-            .context("Failed to daemonize process.")?;
-    }
 
     let config = read_config(
         matches.value_of("config").unwrap(),
