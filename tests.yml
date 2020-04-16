@@ -27,13 +27,18 @@ notify_groups:
       - sns_pavel
       - tg_chan
 
+# can be overriden by setting
+# these on the test level
+defaults:
+  retries: 3
+  recovery: 3
+  interval: 10
+  timeout: 30
+
 tests:
   - type: http_ok
     name: site-com-alive-cdn
-    retries: 3
-    recovery: 3
-    interval: 1
-    url: https://site.com/endpoint
+    target: https://site.com/endpoint
     notify:
       - sns_pavel
       - tg_chan

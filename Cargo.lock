@@ -2226,4 +2226,5 @@ dependencies = [
  "serde_yaml",
  "telegram-bot",
  "tokio",
+ "url",
 ]

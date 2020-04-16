@@ -23,7 +23,7 @@ serde_derive = "1.0.106"
 clap = "2.33.0"
 futures = "0.3.4"
 telegram-bot = "0.7.0"
-tokio = { version = "0.2.18", features = ["rt-core", "macros", "time", "fs", "sync"] }
+tokio = { version = "0.2.18", features = ["rt-core", "macros", "time", "fs", "tcp", "sync"] }
 mpmc = "0.1.5"
 reqwest = "0.10.4"
 hyper = "0.13.4"
@@ -32,6 +32,7 @@ rusoto_core = "0.43.0"
 rusoto_sns = "0.43.0"
 rusoto_sts = "0.43.0"
 handlebars = "3.0.1"
+url = "2.1.1"
 
 [profile]
 

@@ -10,6 +10,9 @@ use telegram_bot::prelude::*;
 use rusoto_core::{Region, HttpClient, credential};
 use rusoto_sns::{Sns, CheckIfPhoneNumberIsOptedOutInput, MessageAttributeValue};
 use rusoto_sts::{Sts, GetCallerIdentityRequest, GetCallerIdentityResponse};
+use futures::Future;
+use tokio::net::TcpStream;
+use std::net::{IpAddr, SocketAddr};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct ZuseConfigNotifierChannel {
@@ -70,7 +73,10 @@ struct ZuseConfigNotifier {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 enum ZuseConfigTestType {
     #[serde(rename = "http_ok")]
-    HttpOk
+    HttpOk,
+
+    #[serde(rename = "tcp_ok")]
+    TcpOk,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -79,7 +85,7 @@ struct ZuseConfigTest {
     test_type: ZuseConfigTestType,
 
     name: String,
-    url: String,
+    target: String,
 
     notify: Option<Vec<String>>,
     notify_groups: Option<Vec<String>>,
@@ -159,6 +165,29 @@ const DEFAULT_MSG_TMPL_ALRT_HTML: &'static str = "<b>ALRT</b> Uptime checks fail
 const DEFAULT_MSG_TMPL_RSLV_SUBJECT: &'static str = "RSVL {{test_name}}";
 const DEFAULT_MSG_TMPL_RSLV_PLAIN: &'static str = "RSLV Uptime checks recovered on '{{test_name}}'. (duration={{time_state_lasted}}s, url: {{test_url}})";
 const DEFAULT_MSG_TMPL_RSLV_HTML: &'static str = "<b>RSLV</b> Uptime checks recovered on '{{test_name}}'. (duration={{time_state_lasted}}s, url: {{test_url}})";
+
+#[derive(Debug, Clone)]
+enum ZuseRunnerStatus {
+    Ok,
+    Failure,
+}
+
+impl Into<ZuseRunnerStatus> for bool {
+    #[inline(always)]
+    fn into(self) -> ZuseRunnerStatus {
+        if self {
+            ZuseRunnerStatus::Ok
+        } else {
+            ZuseRunnerStatus::Failure
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ZuseTestResult {
+    status: ZuseRunnerStatus,
+    debug_dump: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize)]
 struct ZuseJobMessage {
@@ -789,6 +818,45 @@ impl Zuse {
         }
 
         /*
+            VALIDATE TEST TYPE REQUIREMENTS
+        */
+
+        {
+            for test in args.config.tests.iter() {
+                match test.test_type {
+                    ZuseConfigTestType::HttpOk => {
+                        if url::Url::parse(&test.target).is_ok() {
+                            continue;
+                        }
+
+                        println!(
+                            "Error: '{}' (type: {:?}) requires a valid URL as target. Got: {}",
+                            test.name,
+                            test.test_type,
+                            &test.target,
+                        );
+
+                        exit(1);
+                    },
+                    ZuseConfigTestType::TcpOk => {
+                        if test.target.parse::<std::net::SocketAddr>().is_ok() {
+                            continue;
+                        }
+
+                        println!(
+                            "Error: '{}' (type: {:?}) requires an IPv4 (RFC791) or IPv6 (RFC4291) and 16 bit port tuple as target. Got: {}",
+                            test.name,
+                            test.test_type,
+                            &test.target,
+                        );
+
+                        exit(1);
+                    }
+                }
+            }
+        }
+
+        /*
             VERIFY RETRY, RECOVERY AND INTERVAL, APPLY DEFAULS IF NEEDED
         */
 
@@ -901,15 +969,21 @@ impl Zuse {
                         _ => "",
                     };
 
-                    telegram_bot::ChannelId::new(
-                        chat_id.clone().parse::<i64>().unwrap()
-                    )
-                        .text(
-                            msg.build(
-                                &self.args,
-                                &channel.0,
-                            ).1,
-                        )
+                    let (_, _, message) = msg.build(
+                        &self.args,
+                        &channel.0,
+                    );
+
+                    let chat_id =
+                        chat_id
+                            .clone()
+                            .parse::<i64>()
+                            .unwrap();
+
+                    telegram_bot
+                        ::ChannelId
+                        ::new(chat_id)
+                            .text(message)
                 };
 
                 tg_msg
@@ -970,67 +1044,101 @@ impl Zuse {
         Ok(())
     }
 
-    async fn test_runner_alive(
+    async fn test_runner_http_ok(
+        (_test_id, test): &(usize, ZuseConfigTest),
+    ) -> ZuseTestResult {
+        let mut client = reqwest::Client::new()
+            .get(&test.target.clone());
+
+        if test.timeout.is_some() {
+            client = client
+                .timeout(
+                    Duration::from_secs(
+                        test.timeout
+                            .as_ref()
+                            .unwrap()
+                            .clone(),
+                    ),
+                );
+        }
+
+        let res = client.send().await;
+
+        let status =
+            res.is_ok()
+            && res.as_ref()
+                .unwrap()
+                .status()
+                .is_success();
+
+        ZuseTestResult {
+            status: status.into(),
+            debug_dump: Some(format!("{:#?}", res)),
+        }
+    }
+
+    async fn test_runner_tcp_ok(
+        (_test_id, test): &(usize, ZuseConfigTest),
+    ) -> ZuseTestResult {
+        let conn =
+            TcpStream::connect(
+                &test.target.parse::<SocketAddr>().unwrap(),
+            ).await;
+
+        ZuseTestResult {
+            status: conn.is_ok().into(),
+            debug_dump: None,
+        }
+    }
+
+    async fn test_runner_instrument(
         args: &ZuseArgs,
-        (test_id, test): (usize, ZuseConfigTest),
+        test_box: &(usize, ZuseConfigTest),
         mut tx: tokio::sync::mpsc::Sender<ZuseJobMessage>,
     ) -> Result<()> {
+        let ref test_id = test_box.0;
+        let ref test = test_box.1;
+
         let mut jsm = JobStateMachine::new(
             test.retries.unwrap().clone(),
             test.recovery.unwrap().clone(),
         );
 
         let dump_req = {
-            if args.config.config.is_some()
-                && args.config.config.as_ref().unwrap().dump_prefix_url.is_some() {
-                (true, &args.config.config.as_ref().unwrap().dump_prefix_url)
-            } else {
-                (false, &None)
-            }
+            args.config
+                .config
+                .as_ref()
+                .map_or(
+                    (false, None),
+                    |config|
+                        config
+                            .dump_prefix_url
+                            .as_ref()
+                            .map_or(
+                                (false, None),
+                                |dpu| (true, Some(dpu)),
+                            ),
+                )
         };
 
         loop {
-            let mut client = reqwest::Client::new()
-                .get(&test.url.clone());
-
-            if test.timeout.is_some() {
-                client = client
-                    .timeout(
-                        Duration::from_secs(
-                            test.timeout
-                                .as_ref()
-                                .unwrap()
-                                .clone(),
-                        ),
-                    );
-            }
-
-            let req = client.send().await;
-
-            let serialized_req =
-                if dump_req.0 {
-                    format!("{:#?}", req)
-                } else {
-                    "".to_string()
+            let status =
+                match test_box.1.test_type {
+                    ZuseConfigTestType::HttpOk =>
+                        Zuse::test_runner_http_ok(test_box).await,
+                    ZuseConfigTestType::TcpOk =>
+                        Zuse::test_runner_tcp_ok(test_box).await,
                 };
 
-            let assume_alive = match req {
-                Ok(res) => {
-                    res.status().is_success()
-                }
-                Err(_) => false,
+            match status.status {
+                ZuseRunnerStatus::Ok => jsm.win(),
+                ZuseRunnerStatus::Failure => jsm.loss(),
             };
-
-            if assume_alive {
-                jsm.win();
-            } else {
-                jsm.loss();
-            }
 
             if args.debug() {
                 println!(
-                    "alive: {} changed: {} now: {:?} was: {:?} lasted: {}",
-                    assume_alive,
+                    "alive: {:?} changed: {} now: {:?} was: {:?} lasted: {}",
+                    status.status,
                     jsm.state_changed(),
                     jsm.state,
                     jsm.last_state,
@@ -1038,19 +1146,25 @@ impl Zuse {
                 );
             }
 
-            let dump_used = if dump_req.0 { true } else { false };
+            let dump_used = dump_req.0;
 
-            let dump_url = if dump_req.0 {
-                format!(
-                    "{}#{}",
-                    &dump_req.1.as_ref().unwrap(),
-                    base64::encode(&serialized_req),
-                )
-            } else {
-                "".to_string()
-            };
+            let dump_url =
+                if dump_used && status.debug_dump.is_some() {
+                    format!(
+                        "{}#{}",
+                        &dump_req.1.as_ref().unwrap(),
+                        base64::encode(
+                            status
+                                .debug_dump
+                                .as_ref()
+                                .unwrap(),
+                        ),
+                    )
+                } else {
+                    "".to_string()
+                };
 
-            let dump_html = if dump_req.0 {
+            let dump_html = if dump_used {
                 format!(
                     "<a href='{}'>view dump</a>, ",
                     &dump_url,
@@ -1062,7 +1176,7 @@ impl Zuse {
             let msg = ZuseJobMessage {
                 test_id: test_id.clone(),
                 test_name: test.name.clone(),
-                test_url: test.url.clone(),
+                test_url: test.target.clone(),
                 dump_html,
                 dump_url,
                 dump_used,
@@ -1075,18 +1189,18 @@ impl Zuse {
                     JobSMStates::Failure => {
                         tx.send(
                             msg.with_state(
-                                jsm.state.clone(),
+                                JobSMStates::Failure,
                             ),
                         ).await;
                     },
                     JobSMStates::Recovery => {
+                        jsm.normative();
+
                         tx.send(
                             msg.with_state(
-                                jsm.state.clone(),
+                                JobSMStates::Recovery,
                             ),
                         ).await;
-
-                        jsm.normative();
                     },
                     _ => {},
                 }
@@ -1104,17 +1218,14 @@ impl Zuse {
 
     async fn test_runner(
         args: ZuseArgs,
-        (test_id, test): (usize, ZuseConfigTest),
+        ref test_box: (usize, ZuseConfigTest),
         mut tx: tokio::sync::mpsc::Sender<ZuseJobMessage>,
     ) -> Result<()> {
-        match test.test_type {
-            ZuseConfigTestType::HttpOk =>
-                Zuse::test_runner_alive(
-                    &args,
-                    (test_id, test),
-                    tx,
-                ),
-        }.await?;
+        Zuse::test_runner_instrument(
+            &args,
+            test_box,
+            tx,
+        ).await?;
 
         Ok(())
     }
