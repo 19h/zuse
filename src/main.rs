@@ -1099,22 +1099,22 @@ impl Zuse {
     }
 }
 
-fn try_daemonize() -> Result<()> {
-    let stdout = File::create("/dev/null").unwrap();
-    let stderr = File::create("/dev/null").unwrap();
-
-    let daemonize = Daemonize::new()
-        .user("nobody")
-        .group("daemon")
-        .stdout(stdout)
-        .stderr(stderr)
-        .exit_action(|| println!("Executed before master process exits"))
-        .privileged_action(|| "Failed to drop privileges..");
-
-    daemonize.start()?;
-
-    Ok(())
-}
+#fn try_daemonize() -> Result<()> {
+#    let stdout = File::create("/dev/null").unwrap();
+#    let stderr = File::create("/dev/null").unwrap();
+#
+#    let daemonize = Daemonize::new()
+#        .user("nobody")
+#        .group("daemon")
+#        .stdout(stdout)
+#        .stderr(stderr)
+#        .exit_action(|| println!("Executed before master process exits"))
+#        .privileged_action(|| "Failed to drop privileges..");
+#
+#    daemonize.start()?;
+#
+#    Ok(())
+#}
 
 fn read_config(config_path: &str) -> Result<ZuseConfig> {
     Ok(
@@ -1129,10 +1129,10 @@ fn read_config(config_path: &str) -> Result<ZuseConfig> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let matches = {
-        App::new("prof1t")
-            .version("1.0.0")
+        App::new("zuse")
+            .version(clap::crate_version!())
             .author("Kenan Sulayman <kenan@sig.dev>")
-            .about("Testbot with notify function.")
+            .about("The flexible uptime bot, a descendant of the Rust async masterrace.")
             .arg(Arg::with_name("config")
                 .short("c")
                 .long("config")
@@ -1140,10 +1140,6 @@ async fn main() -> Result<()> {
                 .help("Config file")
                 .takes_value(true)
                 .default_value("tests.yml"))
-            .arg(Arg::with_name("daemon")
-                .short("d")
-                .long("daemon")
-                .help("Daemonize prof1t"))
             .arg(Arg::with_name("verbose")
                 .short("v")
                 .long("verbose")
