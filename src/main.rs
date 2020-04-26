@@ -861,7 +861,7 @@ impl Zuse {
                             exit(1);
                         }
 
-                        if &test.expect.is_none() {
+                        if test.expect.is_none() {
                             println!(
                                 "Error: '{}' (type: {:?}) requires expectations.",
                                 test.name,
@@ -1155,18 +1155,48 @@ impl Zuse {
                 );
         }
 
+        let expectations = test.expect.as_ref().unwrap();
+
         let res = client.send().await;
 
-        let status =
-            res.is_ok()
-                && res.as_ref()
-                .unwrap()
-                .status()
-                .is_success();
+        let test_success = loop {
+            if !res.as_ref().is_ok() {
+                break false;
+            }
+
+            let res = res.unwrap();
+
+            let status = res.status().clone();
+
+            if expectations.text.is_some() {
+                let text = res.text().await;
+
+                if text.is_ok() {
+                    let text = text.as_ref().unwrap();
+
+                    if !text.contains(expectations.text.as_ref().unwrap()) {
+                        break false;
+                    }
+                }
+            }
+
+            if expectations.status.is_some() {
+                let parsed_status =
+                    hyper::http::status::StatusCode::from_u16(
+                        expectations.status.as_ref().unwrap().clone(),
+                    ).unwrap();
+
+                if status != parsed_status {
+                    break false;
+                }
+            }
+
+            break true;
+        };
 
         ZuseTestResult {
-            status: status.into(),
-            debug_dump: Some(format!("{:#?}", res)),
+            status: test_success.into(),
+            debug_dump: None,
         }
     }
 
@@ -1219,6 +1249,8 @@ impl Zuse {
                 match test_box.1.test_type {
                     ZuseConfigTestType::HttpOk =>
                         Zuse::test_runner_http_ok(test_box).await,
+                    ZuseConfigTestType::HttpMatch =>
+                        Zuse::test_runner_http_match(test_box).await,
                     ZuseConfigTestType::TcpOk =>
                         Zuse::test_runner_tcp_ok(test_box).await,
                 };

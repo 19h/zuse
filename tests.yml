@@ -52,7 +52,7 @@ tests:
     name: server-smoke-test
     target: 127.0.0.1:3000
     expect:
-      status: 500
-      text: 'hello'
+      status: 200
+      text: 'Google'
     notify_groups:
       - infra_team
