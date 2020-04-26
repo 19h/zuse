@@ -48,3 +48,11 @@ tests:
     target: 127.0.0.1:3000
     notify_groups:
       - infra_team
+  - type: http_match
+    name: server-smoke-test
+    target: 127.0.0.1:3000
+    expect:
+      status: 500
+      text: 'hello'
+    notify_groups:
+      - infra_team

@@ -71,12 +71,21 @@ struct ZuseConfigNotifier {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct ZuseConfigTestExpecations {
+    text: Option<String>,
+    status: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 enum ZuseConfigTestType {
     #[serde(rename = "http_ok")]
     HttpOk,
 
     #[serde(rename = "tcp_ok")]
     TcpOk,
+
+    #[serde(rename = "http_match")]
+    HttpMatch,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -86,6 +95,8 @@ struct ZuseConfigTest {
 
     name: String,
     target: String,
+
+    expect: Option<ZuseConfigTestExpecations>,
 
     notify: Option<Vec<String>>,
     notify_groups: Option<Vec<String>>,
@@ -838,6 +849,55 @@ impl Zuse {
 
                         exit(1);
                     },
+                    ZuseConfigTestType::HttpMatch => {
+                        if !url::Url::parse(&test.target).is_ok() {
+                            println!(
+                                "Error: '{}' (type: {:?}) requires a valid URL as target. Got: {}",
+                                test.name,
+                                test.test_type,
+                                &test.target,
+                            );
+
+                            exit(1);
+                        }
+
+                        if &test.expect.is_none() {
+                            println!(
+                                "Error: '{}' (type: {:?}) requires expectations.",
+                                test.name,
+                                test.test_type,
+                            );
+
+                            exit(1);
+                        }
+
+                        let expectations = &test.expect.as_ref().unwrap();
+
+                        if expectations.status.is_none() && expectations.text.is_none() {
+                            println!(
+                                "Error: '{}' (type: {:?}) either status or text expectations.",
+                                test.name,
+                                test.test_type,
+                            );
+
+                            exit(1);
+                        }
+
+                        let parsed_status = hyper::http::status::StatusCode::from_u16(
+                            expectations.status.as_ref().unwrap().clone(),
+                        );
+
+                        if parsed_status.is_err() {
+                            println!(
+                                "Error: '{}' (type: {:?}) has expects invalid status. Got: {}",
+                                test.name,
+                                test.test_type,
+                                expectations.status.as_ref().unwrap(),
+                            );
+
+                            exit(1);
+                        }
+                    },
                     ZuseConfigTestType::TcpOk => {
                         if test.target.parse::<std::net::SocketAddr>().is_ok() {
                             continue;
@@ -1066,7 +1126,40 @@ impl Zuse {
 
         let status =
             res.is_ok()
-            && res.as_ref()
+                && res.as_ref()
+                .unwrap()
+                .status()
+                .is_success();
+
+        ZuseTestResult {
+            status: status.into(),
+            debug_dump: Some(format!("{:#?}", res)),
+        }
+    }
+
+    async fn test_runner_http_match(
+        (_test_id, test): &(usize, ZuseConfigTest),
+    ) -> ZuseTestResult {
+        let mut client = reqwest::Client::new()
+            .get(&test.target.clone());
+
+        if test.timeout.is_some() {
+            client = client
+                .timeout(
+                    Duration::from_secs(
+                        test.timeout
+                            .as_ref()
+                            .unwrap()
+                            .clone(),
+                    ),
+                );
+        }
+
+        let res = client.send().await;
+
+        let status =
+            res.is_ok()
+                && res.as_ref()
                 .unwrap()
                 .status()
                 .is_success();
