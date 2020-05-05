@@ -27,6 +27,12 @@ struct ZuseConfigNotifierChannel {
     phone: Option<String>,
     target_arn: Option<String>,
     topic_arn: Option<String>,
+
+    // Slack
+
+    channel: Option<String>,
+    username: Option<String>,
+    icon_emoji: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -35,11 +41,15 @@ struct ZuseConfigNotifierAuth {
 
     token: Option<String>,
 
-    // AwsSns
+    // Sns
 
     key: Option<String>,
     secret: Option<String>,
     region: Option<String>,
+
+    // Slack
+
+    hook_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -56,6 +66,8 @@ struct ZuseConfigNotifierTemplates {
 enum ZuseConfigNotifierType {
     #[serde(rename = "telegram")]
     Telegram,
+    #[serde(rename = "slack")]
+    Slack,
     #[serde(rename = "sns")]
     Sns,
 }
@@ -153,12 +165,35 @@ impl ZuseArgs {
 enum ZuseNotifyType {
     Telegram(telegram_bot::Api),
     Sns(rusoto_sns::SnsClient),
+    Slack(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct ZuseChannelSlack {
+    channel: String,
+    username: String,
+    text: Option<String>,
+    icon_emoji: String,
+}
+
+impl ZuseChannelSlack {
+    fn with_message(&self, message: String) -> ZuseChannelSlack {
+        ZuseChannelSlack {
+            text: Some(message),
+            ..self.clone()
+        }
+    }
+
+    fn to_json_string(&self) -> String {
+        serde_json::to_string(self).unwrap()
+    }
 }
 
 #[derive(Debug, Clone)]
 enum ZuseChannelType {
     Telegram(String),
     Sns(Option<String>, Option<String>, Option<String>),
+    Slack(ZuseChannelSlack),
 }
 
 type ZuseChannel = (usize, ZuseChannelType);
@@ -170,12 +205,12 @@ type ZuseNotifyGroupMap = HashMap<String, ZuseNotifyGroup>;
 const DEFAULT_SENDER_ID: &'static str = "NOTICE";
 
 const DEFAULT_MSG_TMPL_ALRT_SUBJECT: &'static str = "ALRT {{test_name}}";
-const DEFAULT_MSG_TMPL_ALRT_PLAIN: &'static str = "ALRT Uptime checks failed on '{{test_name}}'. (url: {{test_url}})";
-const DEFAULT_MSG_TMPL_ALRT_HTML: &'static str = "<b>ALRT</b> Uptime checks failed on '{{test_name}}'. (url: {{test_url}})";
+const DEFAULT_MSG_TMPL_ALRT_PLAIN: &'static str = "ALRT Uptime checks failed on '{{test_name}}'. (url: {{test_url}}{{test_opts}})";
+const DEFAULT_MSG_TMPL_ALRT_HTML: &'static str = "<b>ALRT</b> Uptime checks failed on '{{test_name}}'. (url: {{test_url}}{{test_opts}})";
 
 const DEFAULT_MSG_TMPL_RSLV_SUBJECT: &'static str = "RSVL {{test_name}}";
-const DEFAULT_MSG_TMPL_RSLV_PLAIN: &'static str = "RSLV Uptime checks recovered on '{{test_name}}'. (duration={{time_state_lasted}}s, url: {{test_url}})";
-const DEFAULT_MSG_TMPL_RSLV_HTML: &'static str = "<b>RSLV</b> Uptime checks recovered on '{{test_name}}'. (duration={{time_state_lasted}}s, url: {{test_url}})";
+const DEFAULT_MSG_TMPL_RSLV_PLAIN: &'static str = "RSLV Uptime checks recovered on '{{test_name}}'. (duration={{time_state_lasted}}s, url: {{test_url}}{{test_opts}})";
+const DEFAULT_MSG_TMPL_RSLV_HTML: &'static str = "<b>RSLV</b> Uptime checks recovered on '{{test_name}}'. (duration={{time_state_lasted}}s, url: {{test_url}}{{test_opts}})";
 
 #[derive(Debug, Clone)]
 enum ZuseRunnerStatus {
@@ -197,6 +232,8 @@ impl Into<ZuseRunnerStatus> for bool {
 #[derive(Debug, Clone)]
 struct ZuseTestResult {
     status: ZuseRunnerStatus,
+    // test parameters to be shown in alert messages
+    test_opts: Option<String>,
     debug_dump: Option<String>,
 }
 
@@ -287,6 +324,14 @@ impl ZuseJobMessage {
                 handlebars::Handlebars::new()
                     .render_template(
                         &*tmpl_html,
+                        &self,
+                    )
+                    .unwrap()
+            },
+            ZuseConfigNotifierType::Slack => {
+                handlebars::Handlebars::new()
+                    .render_template(
+                        &*tmpl_plain,
                         &self,
                     )
                     .unwrap()
@@ -566,6 +611,84 @@ impl Zuse {
                             ZuseNotifyType::Telegram(
                                 api,
                             ),
+                        );
+                    }
+                    ZuseConfigNotifierType::Slack => {
+                        if notifier.auth.hook_url.is_none() {
+                            println!(
+                                "Error: notifier {:?} ({:?}) must specify hook url.",
+                                &notifier_id,
+                                &notifier.notifier_type,
+                            );
+
+                            exit(1);
+                        }
+
+                        let hook_url =
+                            notifier.auth.hook_url
+                                .as_ref()
+                                .unwrap()
+                                .clone();
+
+                        let client =
+                            reqwest::Client::new()
+                                .get(&hook_url)
+                                .send()
+                                .await
+                                .unwrap();
+
+                        if client.status() == 403 {
+                            println!(
+                                "Error: notifier {:?} ({:?}) hook URL could not be verified.",
+                                &notifier_id,
+                                &notifier.notifier_type,
+                            );
+
+                            exit(1);
+                        }
+
+                        for channel in notifier.channels.iter() {
+                            if channel.channel.is_none() {
+                                println!(
+                                    "Error: channel {:?} must specify a slack channel.",
+                                    &channel.name,
+                                );
+
+                                exit(1);
+                            }
+
+                            let username =
+                                channel
+                                    .username
+                                    .clone()
+                                    .or(Some("zuse".to_string()))
+                                    .unwrap();
+
+                            let icon_emoji =
+                                channel
+                                    .icon_emoji
+                                    .as_ref()
+                                    .unwrap_or(&":warning:".to_string())
+                                    .clone();
+
+                            channels.insert(
+                                channel.name.clone(),
+                                (
+                                    notifier_id,
+                                    ZuseChannelType::Slack(
+                                        ZuseChannelSlack {
+                                            text: None,
+                                            channel: channel.channel.clone().unwrap(),
+                                            username,
+                                            icon_emoji,
+                                        }
+                                    ),
+                                ),
+                            );
+                        }
+
+                        notifiers.push(
+                            ZuseNotifyType::Slack(hook_url),
                         );
                     }
                     ZuseConfigNotifierType::Sns => {
@@ -1054,6 +1177,25 @@ impl Zuse {
                     tg_msg,
                 ).await?;
             }
+            ZuseNotifyType::Slack(hook_url) => {
+                let (_, _, message) = msg.build(
+                    &self.args,
+                    &channel.0,
+                );
+
+                if let ZuseChannelType::Slack(ref chan) = channel.1 {
+                    let json_payload =
+                        chan.with_message(message)
+                            .to_json_string();
+
+                    reqwest::Client::new()
+                        .post(hook_url)
+                        .header(reqwest::header::USER_AGENT, "Ares")
+                        .body(json_payload)
+                        .send()
+                        .await?;
+                }
+            }
             ZuseNotifyType::Sns(client) => {
                 match &channel.1 {
                     ZuseChannelType::Sns(phone, target, topic) => {
@@ -1133,6 +1275,7 @@ impl Zuse {
 
         ZuseTestResult {
             status: status.into(),
+            test_opts: None,
             debug_dump: Some(format!("{:#?}", res)),
         }
     }
@@ -1196,6 +1339,7 @@ impl Zuse {
 
         ZuseTestResult {
             status: test_success.into(),
+            test_opts: None,
             debug_dump: None,
         }
     }
@@ -1210,6 +1354,7 @@ impl Zuse {
 
         ZuseTestResult {
             status: conn.is_ok().into(),
+            test_opts: None,
             debug_dump: None,
         }
     }

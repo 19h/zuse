@@ -1,3 +1,4 @@
 /target
 .idea
 tests-intern.yml
+.DS_Store

@@ -1,6 +1,6 @@
 <h1 align="center">zuse</h1>
 
-<h5 align="center">The flexible uptime bot, a descendant of the Rust async masterrace.</h5>
+<h5 align="center">A flexible high-performance uptime bot powered by async Rust with Telegram, SNS and Slack notification backends.</h5>
 
 <div align="center">
   <a href="https://crates.io/crates/zuse">
@@ -42,6 +42,14 @@ notifiers:
         target_arn: arn:aws:sns:us-east-1:XXXXXXXXXXXX:XXXXXXXX
         # or
         topic_arn: arn:aws:sns:us-east-1:XXXXXXXXXXXX:XXXXXXXX
+  - type: slack
+    auth:
+      hook_url: https://hooks.slack.com/services/XXXXX/XXXX/XXXXXXXX
+    channels:
+      - name: slack_alrt
+        channel: '#alrt'
+        username: 'zuse'
+        icon_emoji: ':warning:'
 
 # optional, a group of notify targets
 notify_groups:
@@ -64,6 +72,7 @@ tests:
     notify:
       - sns_pavel
       - tg_chan
+      - slack_alrt
     # or
     notify_groups:
       - infra_team
@@ -72,6 +81,15 @@ tests:
     target: 127.0.0.1:3000
     notify_groups:
       - infra_team
+  - type: http_match
+    name: server-smoke-test
+    target: 127.0.0.1:3000
+    expect:
+      status: 200
+      text: 'Google'
+    notify_groups:
+      - infra_team
+
 ```
 
 #### Notes

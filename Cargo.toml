@@ -33,6 +33,7 @@ rusoto_sns = "0.43.0"
 rusoto_sts = "0.43.0"
 handlebars = "3.0.1"
 url = "2.1.1"
+serde_json = "1.0.52"
 
 [profile]
 
