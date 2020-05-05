@@ -7,8 +7,8 @@ jobs:
   create-release:
     name: create-release
     runs-on: ubuntu-latest
-      # env:
-      # Set to force version number, e.g., when no tag exists.
+    # env:
+    # Set to force version number, e.g., when no tag exists.
     # ZUSE_VERSION: TEST-0.0.0
     steps:
       - name: Create artifacts directory
@@ -101,11 +101,6 @@ jobs:
         if: matrix.os == 'ubuntu-18.04'
         run: |
           ci/ubuntu-install-packages
-
-      - name: Install packages (macOS)
-        if: matrix.os == 'macos-latest'
-        run: |
-          ci/macos-install-packages
 
       - name: Install Rust
         uses: actions-rs/toolchain@v1

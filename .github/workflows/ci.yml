@@ -92,11 +92,6 @@ jobs:
         run: |
           ci/ubuntu-install-packages
 
-      - name: Install packages (macOS)
-        if: matrix.os == 'macos-latest'
-        run: |
-          ci/macos-install-packages
-
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
@@ -135,20 +130,3 @@ jobs:
             echo "====="
           fi
           set -x
-
-  rustfmt:
-    name: rustfmt
-    runs-on: ubuntu-18.04
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v2
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
-          profile: minimal
-          components: rustfmt
-      - name: Check formatting
-        run: |
-          cargo fmt --all -- --check
