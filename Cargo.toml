@@ -1,6 +1,6 @@
 [package]
 name = "zuse"
-version = "0.3.7-alpha.0"
+version = "0.4.7-alpha.0"
 authors = ["Kenan Sulayman <kenan@sig.dev>"]
 license = "MIT"
 repository = "https://github.com/19h/zuse"
@@ -34,6 +34,15 @@ rusoto_sts = "0.43.0"
 handlebars = "3.0.1"
 url = "2.1.1"
 serde_json = "1.0.52"
+
+[target.i686-unknown-linux-gnu.dependencies]
+openssl = { version = "^0.10", features = ["vendored"] }
+
+[target.x86_64-unknown-linux-musl.dependencies]
+openssl = { version = "^0.10", features = ["vendored"] }
+
+[target.arm-unknown-linux-gnueabihf.dependencies]
+openssl = { version = "^0.10", features = ["vendored"] }
 
 [profile]
 

@@ -1,5 +1,3 @@
-#![feature(async_closure)]
-
 use anyhow::{Result, Context};
 use clap::{Arg, App};
 use serde_derive::{Deserialize, Serialize};
