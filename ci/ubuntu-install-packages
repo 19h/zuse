@@ -1,4 +1,6 @@
 #!/bin/sh
 
+sudo dpkg --add-architecture i368
 sudo apt-get update
+sudo apt-get install -y libssl1.0-dev:i368 libssl-dev:i368 openssl:i368
 sudo apt-get install -y --no-install-recommends libssl-dev openssl
