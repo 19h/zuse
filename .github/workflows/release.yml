@@ -161,6 +161,7 @@ jobs:
         run: |
           outdir="$(ci/cargo-out-dir "${{ env.TARGET_DIR }}")"
           staging="zuse-${{ env.RELEASE_VERSION }}-${{ matrix.target }}"
+          mkdir -p "$staging"
 
           cp readme.md "$staging/"
 
