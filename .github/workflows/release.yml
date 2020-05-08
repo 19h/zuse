@@ -161,17 +161,14 @@ jobs:
         run: |
           outdir="$(ci/cargo-out-dir "${{ env.TARGET_DIR }}")"
           staging="zuse-${{ env.RELEASE_VERSION }}-${{ matrix.target }}"
-          mkdir -p "$staging"/{complete,doc}
 
-          cp {readme.md} "$staging/"
+          cp readme.md "$staging/"
 
           if [ "${{ matrix.os }}" = "windows-2019" ]; then
             cp "target/${{ matrix.target }}/release/zuse.exe" "$staging/"
             7z a "$staging.zip" "$staging"
             echo "::set-env name=ASSET::$staging.zip"
           else
-            # The man page is only generated on Unix systems. ¯\_(ツ)_/¯
-            cp "$outdir"/zuse.1 "$staging/doc/"
             cp "target/${{ matrix.target }}/release/zuse" "$staging/"
             tar czf "$staging.tar.gz" "$staging"
             echo "::set-env name=ASSET::$staging.tar.gz"
