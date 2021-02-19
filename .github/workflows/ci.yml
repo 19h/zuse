@@ -108,6 +108,8 @@ jobs:
           echo "::set-env name=CARGO::cross"
           echo "::set-env name=TARGET_FLAGS::--target ${{ matrix.target }}"
           echo "::set-env name=TARGET_DIR::./target/${{ matrix.target }}"
+        env:
+          ACTIONS_ALLOW_UNSECURE_COMMANDS: true
 
       - name: Show command used for Cargo
         run: |

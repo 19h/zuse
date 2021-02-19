@@ -1,6 +1,6 @@
 [package]
 name = "zuse"
-version = "0.4.9-alpha.0"
+version = "0.4.9"
 authors = ["Kenan Sulayman <kenan@sig.dev>"]
 license = "MIT"
 repository = "https://github.com/19h/zuse"
