@@ -1226,6 +1226,8 @@ impl Zuse {
                             message,
                             subject: Some(subject),
                             message_attributes: Some(sns_attr),
+                            message_deduplication_id: None,
+                            message_group_id: None,
                             message_structure: None,
                             phone_number: phone.clone(),
                             target_arn: target.clone(),
@@ -1474,7 +1476,7 @@ impl Zuse {
                 }
             }
 
-            tokio::time::delay_for(
+            tokio::time::sleep(
                 Duration::from_secs(
                     test.interval.unwrap().clone(),
                 ),
