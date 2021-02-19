@@ -22,7 +22,7 @@ serde_yaml = "0.8.17"
 serde_derive = "1.0.123"
 clap = "2.33.3"
 futures = "0.3.12"
-telegram-bot = "0.8.0"
+telegram-bot = { git = "https://github.com/telegram-rs/telegram-bot.git" }
 tokio = { version = "1.2.0", features = ["macros", "time", "fs", "sync"] }
 mpmc = "0.1.5"
 reqwest = "0.11.1"
