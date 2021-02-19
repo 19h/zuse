@@ -2326,7 +2326,7 @@ checksum = "81a974bcdd357f0dca4d41677db03436324d45a4c9ed2d0b873a5a360ce41c36"
 
 [[package]]
 name = "zuse"
-version = "0.4.10-alpha.0"
+version = "0.4.10"
 dependencies = [
  "anyhow",
  "base64",
