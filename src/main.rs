@@ -8,9 +8,9 @@ use telegram_bot::prelude::*;
 use rusoto_core::{Region, HttpClient, credential};
 use rusoto_sns::{Sns, CheckIfPhoneNumberIsOptedOutInput, MessageAttributeValue};
 use rusoto_sts::{Sts, GetCallerIdentityRequest, GetCallerIdentityResponse};
-use futures::Future;
+
 use tokio::net::TcpStream;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{SocketAddr};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct ZuseConfigNotifierChannel {
@@ -1362,7 +1362,7 @@ impl Zuse {
     async fn test_runner_instrument(
         args: &ZuseArgs,
         test_box: &(usize, ZuseConfigTest),
-        mut tx: tokio::sync::mpsc::Sender<ZuseJobMessage>,
+        tx: tokio::sync::mpsc::Sender<ZuseJobMessage>,
     ) -> Result<()> {
         let ref test_id = test_box.0;
         let ref test = test_box.1;
@@ -1489,7 +1489,7 @@ impl Zuse {
     async fn test_runner(
         args: ZuseArgs,
         ref test_box: (usize, ZuseConfigTest),
-        mut tx: tokio::sync::mpsc::Sender<ZuseJobMessage>,
+        tx: tokio::sync::mpsc::Sender<ZuseJobMessage>,
     ) -> Result<()> {
         Zuse::test_runner_instrument(
             &args,
@@ -1566,7 +1566,7 @@ impl Zuse {
             );
 
         for test in self.args.config.tests.iter().cloned().enumerate() {
-            let mut test_tx = sender.clone();
+            let test_tx = sender.clone();
             let (test_id, test) = test;
 
             let args = self.args.clone();
