@@ -68,6 +68,8 @@ enum ZuseConfigNotifierType {
     Slack,
     #[serde(rename = "sns")]
     Sns,
+    #[serde(rename = "debug")]
+    Debug,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -164,6 +166,7 @@ enum ZuseNotifyType {
     Telegram(telegram_bot::Api),
     Sns(rusoto_sns::SnsClient),
     Slack(String),
+    Debug,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -192,6 +195,7 @@ enum ZuseChannelType {
     Telegram(String),
     Sns(Option<String>, Option<String>, Option<String>),
     Slack(ZuseChannelSlack),
+    Debug,
 }
 
 type ZuseChannel = (usize, ZuseChannelType);
@@ -326,15 +330,9 @@ impl ZuseJobMessage {
                     )
                     .unwrap()
             },
-            ZuseConfigNotifierType::Slack => {
-                handlebars::Handlebars::new()
-                    .render_template(
-                        &*tmpl_plain,
-                        &self,
-                    )
-                    .unwrap()
-            },
-            ZuseConfigNotifierType::Sns => {
+            ZuseConfigNotifierType::Slack
+            | ZuseConfigNotifierType::Sns
+            | ZuseConfigNotifierType::Debug => {
                 handlebars::Handlebars::new()
                     .render_template(
                         &*tmpl_plain,
@@ -874,6 +872,29 @@ impl Zuse {
                             ),
                         );
                     },
+                    ZuseConfigNotifierType::Debug => {
+                        for channel in notifier.channels.iter() {
+                            channels.insert(
+                                channel.name.clone(),
+                                (
+                                    notifier_id,
+                                    ZuseChannelType::Debug,
+                                ),
+                            );
+                        }
+
+                        if args.verbose() {
+                            println!(
+                                "Configured notifier {} (type: {:?})..",
+                                notifier_id,
+                                &notifier.notifier_type,
+                            );
+                        }
+
+                        notifiers.push(
+                            ZuseNotifyType::Debug,
+                        );
+                    }
                 }
             }
         }
@@ -1241,6 +1262,14 @@ impl Zuse {
                     _ => {}
                 }
             }
+            ZuseNotifyType::Debug => {
+                let (sender_id, subject, message) = msg.build(
+                    &self.args,
+                    &channel.0,
+                );
+
+                dbg!(sender_id, subject, message);
+            }
         }
 
         Ok(())
@@ -1407,12 +1436,15 @@ impl Zuse {
 
             if args.debug() {
                 println!(
-                    "alive: {:?} changed: {} now: {:?} was: {:?} lasted: {}",
+                    "alive: {:?} changed: {} now: {:?} was: {:?} lasted: {} | {} / {:?} / T: {}",
                     status.status,
                     jsm.state_changed(),
                     jsm.state,
                     jsm.last_state,
                     jsm.last_state_lasted,
+                    test_id,
+                    &test.test_type,
+                    &test.target,
                 );
             }
 
@@ -1433,6 +1465,13 @@ impl Zuse {
                 } else {
                     "".to_string()
                 };
+
+            if args.debug() && dump_used {
+                println!(
+                    "dump: {}",
+                    &dump_url,
+                );
+            }
 
             let dump_html = if dump_used {
                 format!(
