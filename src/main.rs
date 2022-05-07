@@ -4,7 +4,7 @@ use serde_derive::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::process::exit;
 use std::time::Duration;
-use telegram_bot::prelude::*;
+use pw_telegram_bot_fork::prelude::*;
 use rusoto_core::{Region, HttpClient, credential};
 use rusoto_sns::{Sns, CheckIfPhoneNumberIsOptedOutInput, MessageAttributeValue};
 use rusoto_sts::{Sts, GetCallerIdentityRequest, GetCallerIdentityResponse};
@@ -163,7 +163,7 @@ impl ZuseArgs {
 }
 
 enum ZuseNotifyType {
-    Telegram(telegram_bot::Api),
+    Telegram(pw_telegram_bot_fork::Api),
     Sns(rusoto_sns::SnsClient),
     Slack(String),
     Debug,
@@ -519,7 +519,7 @@ impl Zuse {
                                 .unwrap()
                                 .clone();
 
-                        let api = telegram_bot::Api::new(
+                        let api = pw_telegram_bot_fork::Api::new(
                             token.clone(),
                         );
 
@@ -533,7 +533,7 @@ impl Zuse {
                         }
 
                         if api.send(
-                            telegram_bot::GetMe,
+                            pw_telegram_bot_fork::GetMe,
                         ).await.is_err() {
                             println!(
                                 "Error: notifier {} ({:?}) has invalid telegram token. (token: {})",
@@ -560,7 +560,7 @@ impl Zuse {
                                 };
 
                             if api.send(
-                                telegram_bot::ChannelId::new(
+                                pw_telegram_bot_fork::ChannelId::new(
                                     chan_id.clone().parse::<i64>().unwrap()
                                 ).get_chat()
                             ).await.is_err() {
@@ -1182,14 +1182,14 @@ impl Zuse {
                             .parse::<i64>()
                             .unwrap();
 
-                    telegram_bot
+                    pw_telegram_bot_fork
                         ::ChannelId
                         ::new(chat_id)
                             .text(message)
                 };
 
                 tg_msg
-                    .parse_mode(telegram_bot::types::ParseMode::Html)
+                    .parse_mode(pw_telegram_bot_fork::types::ParseMode::Html)
                     .disable_preview();
 
                 api.send(
@@ -1642,18 +1642,18 @@ fn read_config(config_path: &str) -> Result<ZuseConfig> {
 async fn main() -> Result<()> {
     let matches = {
         App::new("zuse")
-            .version(clap::crate_version!())
+            .version(env!("CARGO_PKG_VERSION"))
             .author("Kenan Sulayman <kenan@sig.dev>")
             .about("The flexible uptime bot, a descendant of the Rust async masterrace.")
             .arg(Arg::with_name("config")
-                .short("c")
+                .short('c')
                 .long("config")
                 .value_name("CONFIG")
                 .help("Config file")
                 .takes_value(true)
                 .default_value("tests.yml"))
             .arg(Arg::with_name("verbose")
-                .short("v")
+                .short('v')
                 .long("verbose")
                 .help("Print verbose logs"))
             .arg(Arg::with_name("debug")
